@@ -10,6 +10,8 @@ import {
 import type { ClientMsg, PlayerInfo, ServerMsg } from '../shared/protocol';
 import { cleanText, randomLook, sanitizeLook, teamClothColors } from '../shared/look';
 import { clamp, resolve, step } from '../shared/physics';
+import type { MatchSize } from '../shared/arena';
+import { Matchmaker, type Seat } from './match';
 
 const PORT = Number(process.env.PORT ?? 3001);
 const DIST = resolvePath(fileURLToPath(new URL('.', import.meta.url)), '../dist');
@@ -31,6 +33,7 @@ interface Conn {
   ws: WebSocket;
   ip: string;
   player?: Player;
+  seat?: Seat; // presente quando está na fila ou numa partida de evento
   alive: boolean;
 }
 
@@ -38,6 +41,15 @@ const players = new Map<number, Player>();
 const conns = new Set<Conn>();
 const ipCount = new Map<string, number>();
 let nextId = 1;
+
+// Eventos (FPS): ao começar a partida, o jogador sai da avenida; ao terminar, o cliente entra de novo.
+const matchmaker = new Matchmaker(
+  () => nextId++,
+  (seats) => {
+    for (const c of conns) if (c.seat && seats.includes(c.seat)) removePlayer(c);
+  },
+  () => broadcastAll(stats()),
+);
 
 // ---------- HTTP: serve o build do cliente em produção ----------
 const MIME: Record<string, string> = {
@@ -133,6 +145,7 @@ wss.on('connection', (ws, req) => {
     const n = (ipCount.get(ip) ?? 1) - 1;
     if (n <= 0) ipCount.delete(ip);
     else ipCount.set(ip, n);
+    if (conn.seat) matchmaker.leave(conn.seat);
     removePlayer(conn);
   });
 });
@@ -154,7 +167,7 @@ function handle(conn: Conn, msg: ClientMsg) {
       break;
 
     case 'join': {
-      if (p) return;
+      if (p || (conn.seat && matchmaker.matchOf(conn.seat))) return;
       if (humans() >= MAX_PLAYERS) return send(conn.ws, { t: 'error', msg: 'A avenida está lotada. Tente de novo em instantes.' });
       const team: TeamId = msg.team === 1 ? 1 : 0;
       const at = spawnPoint(team);
@@ -212,7 +225,30 @@ function handle(conn: Conn, msg: ClientMsg) {
     }
 
     case 'leave':
+      if (conn.seat) matchmaker.dequeue(conn.seat, false);
       removePlayer(conn);
+      break;
+
+    // ----- Eventos -----
+    case 'queue': {
+      if (!p) return send(conn.ws, { t: 'error', msg: 'Entre na avenida antes de procurar um evento.' });
+      if (conn.seat && matchmaker.matchOf(conn.seat)) return;
+      conn.seat = { ws: conn.ws, name: p.name, team: p.team, look: p.look };
+      matchmaker.enqueue(conn.seat, msg.mode, Number(msg.size) as MatchSize, !!msg.bots);
+      break;
+    }
+    case 'unqueue':
+      if (conn.seat) matchmaker.dequeue(conn.seat);
+      break;
+    case 'quitMatch':
+      if (conn.seat) matchmaker.leave(conn.seat);
+      break;
+    case 'minput':
+    case 'shoot':
+    case 'reload':
+    case 'use':
+    case 'switch':
+      if (conn.seat) matchmaker.handle(conn.seat, msg);
       break;
   }
 }
@@ -310,6 +346,7 @@ setInterval(() => {
     p.moving = step(p, dx, dz, p.input.run, dt);
     if (p.moving) p.yaw = Math.atan2(dx, dz);
   }
+  matchmaker.tick(dt, now);
 }, 1000 / TICK_RATE);
 
 setInterval(() => {

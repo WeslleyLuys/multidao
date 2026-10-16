@@ -27,8 +27,10 @@ export class Graphics {
   private composer?: EffectComposer;
   private gtao?: GTAOPass;
   private shadowTarget = new THREE.Vector3();
+  private hemi: THREE.HemisphereLight;
+  private renderPass?: RenderPass;
 
-  constructor(canvas: HTMLCanvasElement, readonly scene: THREE.Scene, readonly camera: THREE.PerspectiveCamera) {
+  constructor(canvas: HTMLCanvasElement, public scene: THREE.Scene, public camera: THREE.PerspectiveCamera) {
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 0.62;
@@ -60,7 +62,8 @@ export class Graphics {
 
     scene.fog = new THREE.Fog('#a9bccb', 110, 430);
 
-    scene.add(new THREE.HemisphereLight('#cfe3ff', '#5b5246', 0.5));
+    this.hemi = new THREE.HemisphereLight('#cfe3ff', '#5b5246', 0.5);
+    scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight('#fff1dc', 3.6);
     this.sun.shadow.camera.left = this.sun.shadow.camera.bottom = -32;
     this.sun.shadow.camera.right = this.sun.shadow.camera.top = 32;
