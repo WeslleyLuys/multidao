@@ -1,0 +1,30 @@
+{
+  "name": "multidao",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "concurrently -k -n server,client -c yellow,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:client": "vite",
+    "build": "tsc --noEmit && vite build",
+    "start": "NODE_ENV=production tsx server/index.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "ws": "^8.22.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/three": "^0.186.0",
+    "@types/ws": "^8.18.2",
+    "concurrently": "^10.0.6",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vite": "^5.4.21"
+  }
+}

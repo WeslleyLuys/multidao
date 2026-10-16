@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#161a1f">
+  <title>Multidão · a manifestação online</title>
+  <meta name="description" content="Entre na avenida pelo navegador: escolha seu lado e seu visual, converse, leve bandeira e cartaz.">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+</head>
+<body>
+  <canvas id="game"></canvas>
+
+  <!-- Lobby -->
+  <section id="lobby" class="overlay">
+    <div class="lobby-card">
+      <header class="brand">
+        <span class="brand-logo" data-logo></span>
+        <div>
+          <h1 data-game-name></h1>
+          <p class="tagline" data-tagline></p>
+        </div>
+      </header>
+
+      <div class="lobby-grid">
+        <div class="lobby-form">
+          <label class="field">
+            <span>Seu nome</span>
+            <input id="name" maxlength="16" autocomplete="nickname" placeholder="Como quer aparecer?">
+          </label>
+
+          <div class="field">
+            <span>Seu lado</span>
+            <div id="teams" class="teams"></div>
+          </div>
+
+          <div class="field-row">
+            <div class="field">
+              <span>Tom de pele</span>
+              <div id="skins" class="swatches"></div>
+            </div>
+            <div class="field">
+              <span>Cor do cabelo</span>
+              <div id="hairs" class="swatches"></div>
+            </div>
+          </div>
+
+          <div class="field outfit">
+            <div class="outfit-head">
+              <span>Roupa</span>
+              <button id="randomize" type="button" class="link-btn">🎲 Aleatório</button>
+            </div>
+            <div id="slot-tabs" class="tabs" role="tablist"></div>
+            <div class="outfit-body">
+              <div class="sub"><small>Estilo</small><div id="piece-style" class="chips"></div></div>
+              <div class="sub"><small>Cor</small><div id="piece-color" class="swatches small"></div></div>
+              <div class="sub"><small>Estampa</small><div id="piece-pattern" class="chips"></div></div>
+              <div class="sub"><small>Cor do detalhe</small><div id="piece-accent" class="swatches small"></div></div>
+              <div class="sub" id="print-row"><small>Estampa no peito</small><div id="piece-print" class="chips"></div></div>
+            </div>
+          </div>
+
+          <div class="field">
+            <span>Nas mãos</span>
+            <div id="items" class="chips"></div>
+          </div>
+
+          <label class="field" id="sign-field" hidden>
+            <span>Texto do cartaz</span>
+            <input id="sign" maxlength="24" placeholder="Escreva sua mensagem">
+          </label>
+        </div>
+
+        <div class="lobby-preview">
+          <canvas id="preview"></canvas>
+          <p id="online" class="online">Conectando…</p>
+          <button id="enter" class="btn-primary" disabled>Entrar na avenida</button>
+          <button id="back" class="btn-secondary" hidden>Voltar sem salvar</button>
+          <p id="lobby-error" class="error" hidden></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Menu de pausa (Esc) -->
+  <section id="menu" class="overlay" hidden>
+    <div class="menu-card" role="dialog" aria-labelledby="menu-title">
+      <header class="brand">
+        <span class="brand-logo small" data-logo></span>
+        <h2 id="menu-title">Menu</h2>
+      </header>
+      <button id="menu-resume" class="btn-primary">Continuar</button>
+      <button id="menu-look" class="btn-secondary">Personalizar visual</button>
+      <button id="menu-quality" class="btn-secondary">Gráficos</button>
+      <button id="menu-exit" class="btn-secondary danger">Sair para o menu principal</button>
+      <p class="menu-hint">Esc para voltar ao jogo</p>
+    </div>
+  </section>
+
+  <!-- HUD do jogo -->
+  <section id="hud" hidden>
+    <div class="hud-top">
+      <button id="menu-btn" class="menu-btn" type="button" aria-label="Abrir menu">☰</button>
+      <span class="brand-logo small" data-logo></span>
+      <strong data-game-name></strong>
+      <span id="hud-online" class="pill"></span>
+      <span id="hud-status" class="pill warn" hidden>Reconectando…</span>
+    </div>
+
+    <div class="chat">
+      <ul id="chat-log"></ul>
+      <input id="chat-input" maxlength="140" placeholder="Enter para conversar" autocomplete="off">
+    </div>
+
+    <div id="emotes" class="emotes"></div>
+
+    <p class="help">WASD/setas para andar · Shift corre · arraste para girar a câmera · roda do mouse para zoom · 1–4 emotes · Esc menu</p>
+
+    <div id="joystick" class="joystick"><div class="knob"></div></div>
+  </section>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
