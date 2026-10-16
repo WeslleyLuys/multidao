@@ -226,3 +226,160 @@ input:focus { border-color: var(--accent); }
   .chat { bottom: auto; top: 60px; width: min(300px, calc(100% - 24px)); }
   #chat-log { max-height: 120px; }
 }
+
+/* ---------- Eventos: tela de escolha e fila ---------- */
+#events { z-index: 20; background: rgba(12, 14, 17, 0.55); backdrop-filter: blur(3px); }
+.events-card { width: min(460px, 100%); }
+.events-card .field { gap: 10px; }
+.mode-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.mode {
+  padding: 14px; border-radius: 12px; cursor: pointer; text-align: left;
+  border: 2px solid var(--line); background: var(--panel-2); color: var(--text); font: inherit;
+}
+.mode strong { display: block; font-size: 17px; }
+.mode small { color: var(--muted); }
+.mode[aria-pressed="true"] { border-color: var(--accent); }
+.mode:disabled { opacity: 0.45; cursor: not-allowed; }
+.events-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.queue-bar {
+  position: absolute; top: 56px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 16px; border-radius: 999px;
+  background: rgba(22, 26, 31, 0.88); border: 1px solid var(--accent); font-size: 14px; white-space: nowrap;
+}
+.queue-bar button { border: 0; border-radius: 999px; padding: 6px 12px; cursor: pointer; font: inherit; font-weight: 700; background: var(--panel-2); color: var(--text); }
+.hud-btn {
+  border: 0; border-radius: 999px; padding: 5px 12px; cursor: pointer; font: inherit; font-weight: 800; font-size: 13px;
+  background: var(--accent); color: #111;
+}
+
+/* ---------- HUD da partida ---------- */
+.mhud { position: fixed; inset: 0; z-index: 8; pointer-events: none; font-weight: 700; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.7); }
+.mhud button, .mhud .m-pause, .mhud .m-board, .mhud .m-touch > * { pointer-events: auto; }
+.m-top { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 10px; }
+.m-team { display: flex; align-items: center; gap: 8px; padding: 6px 14px; border-radius: 10px; background: rgba(15, 18, 22, 0.7); border-bottom: 3px solid var(--c); }
+.m-team b { font-size: 24px; color: var(--c); }
+.m-team.mine { box-shadow: 0 0 0 2px var(--c); }
+.m-timer { min-width: 110px; text-align: center; font-size: 22px; padding: 6px 12px; border-radius: 10px; background: rgba(15, 18, 22, 0.7); }
+.m-timer.low { color: #ff6b6b; }
+.m-feed { position: absolute; top: 12px; right: 12px; display: grid; gap: 4px; justify-items: end; font-size: 14px; }
+.m-kill { padding: 4px 10px; border-radius: 8px; background: rgba(15, 18, 22, 0.65); }
+.m-kill.me { box-shadow: inset 0 0 0 1px var(--accent); }
+.m-kill span { color: #cfd6df; font-weight: 600; }
+.m-cross { --gap: 6px; position: absolute; left: 50%; top: 50%; width: 0; height: 0; }
+.m-cross i { position: absolute; background: #fff; box-shadow: 0 0 2px #000; }
+.m-cross i:nth-child(1) { width: 2px; height: 9px; left: -1px; top: calc(-9px - var(--gap)); }
+.m-cross i:nth-child(2) { width: 2px; height: 9px; left: -1px; top: var(--gap); }
+.m-cross i:nth-child(3) { width: 9px; height: 2px; top: -1px; left: calc(-9px - var(--gap)); }
+.m-cross i:nth-child(4) { width: 9px; height: 2px; top: -1px; left: var(--gap); }
+.m-hitmark { position: absolute; left: 50%; top: 50%; width: 22px; height: 22px; margin: -11px; opacity: 0;
+  background: linear-gradient(45deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%), linear-gradient(-45deg, transparent 45%, #fff 45%, #fff 55%, transparent 55%); }
+.m-hitmark.show { opacity: 1; }
+.m-hitmark.head { filter: drop-shadow(0 0 2px #f00) hue-rotate(0deg); background: linear-gradient(45deg, transparent 42%, #ff4d4d 42%, #ff4d4d 58%, transparent 58%), linear-gradient(-45deg, transparent 42%, #ff4d4d 42%, #ff4d4d 58%, transparent 58%); }
+.m-dmg { position: absolute; inset: 0; opacity: 0; background: radial-gradient(ellipse at center, transparent 50%, rgba(220, 20, 20, 0.6)); }
+.m-dmg.show { animation: mdmg 0.5s ease-out; }
+@keyframes mdmg { from { opacity: 1; } to { opacity: 0; } }
+.m-prompt { position: absolute; left: 50%; top: 62%; transform: translateX(-50%); font-size: 16px; padding: 6px 12px; border-radius: 8px; }
+.m-prompt:empty { display: none; }
+.m-prompt:not(:empty) { background: rgba(15, 18, 22, 0.6); }
+.m-center { position: absolute; left: 50%; top: 36%; transform: translate(-50%, -50%); font-size: 30px; font-weight: 900; text-align: center; white-space: pre-line; }
+.m-hp { position: absolute; left: 16px; bottom: 16px; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 12px; background: rgba(15, 18, 22, 0.7); }
+.m-hpbar { width: 180px; height: 12px; border-radius: 6px; background: rgba(255, 255, 255, 0.15); overflow: hidden; }
+.m-hpbar div { height: 100%; transition: width 0.15s; }
+.m-hp b { font-size: 22px; min-width: 40px; }
+.m-weapon { position: absolute; right: 16px; bottom: 16px; text-align: right; padding: 8px 12px; border-radius: 12px; background: rgba(15, 18, 22, 0.7); }
+.m-wname { font-size: 18px; }
+.m-ammo { font-size: 28px; font-weight: 900; }
+.m-slots { display: flex; gap: 6px; justify-content: flex-end; font-size: 11px; margin-top: 4px; }
+.m-slots span { opacity: 0.3; }
+.m-slots span.own { opacity: 0.8; }
+.m-slots span.cur { opacity: 1; color: var(--accent); }
+.m-click { position: absolute; left: 50%; top: 72%; transform: translateX(-50%); padding: 8px 14px; border-radius: 10px; background: rgba(15, 18, 22, 0.75); font-size: 13px; font-weight: 600; max-width: 90vw; text-align: center; }
+.m-board { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(760px, 94vw); max-height: 86vh; overflow: auto;
+  padding: 18px; border-radius: 16px; background: rgba(22, 26, 31, 0.95); border: 1px solid var(--line); text-shadow: none; display: grid; gap: 12px; }
+.m-board h2 { margin: 0; text-align: center; font-size: 26px; }
+.m-board h3 { margin: 0 0 6px; }
+.m-board-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.m-board table { width: 100%; border-collapse: collapse; font-size: 13px; font-weight: 600; }
+.m-board th { text-align: left; color: var(--muted); font-weight: 700; padding: 4px; }
+.m-board td { padding: 4px; border-top: 1px solid var(--line); }
+.m-board tr.me td { color: var(--accent); }
+.m-mvp { margin: 0; text-align: center; color: var(--accent); }
+.m-pause { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(12, 14, 17, 0.55); text-shadow: none; }
+.m-touch .m-joy { display: block; left: 24px; bottom: 90px; }
+.m-btn { position: absolute; border: 0; border-radius: 50%; background: rgba(255, 255, 255, 0.18); color: #fff; font: inherit; font-weight: 900; touch-action: none; }
+.m-fire { right: 24px; bottom: 110px; width: 86px; height: 86px; background: rgba(230, 57, 70, 0.55); }
+.m-use { right: 124px; bottom: 120px; width: 60px; height: 60px; font-size: 11px; }
+.m-reload { right: 40px; bottom: 210px; width: 50px; height: 50px; }
+.m-swap { right: 104px; bottom: 196px; width: 50px; height: 50px; }
+.m-pausebtn { left: 16px; top: 16px; width: 40px; height: 40px; }
+@media (max-width: 760px) {
+  .m-board-cols { grid-template-columns: 1fr; }
+  .m-hp { bottom: auto; top: 64px; }
+  .m-weapon { bottom: auto; top: 64px; }
+  .m-center { font-size: 22px; }
+}
+
+/* Luneta da sniper, colete, granadas */
+.m-scope {
+  position: absolute; inset: 0;
+  background: radial-gradient(circle at center, transparent 0 min(38vh, 38vw), rgba(0, 0, 0, 0.92) calc(min(38vh, 38vw) + 2px));
+}
+.m-scope::before, .m-scope::after { content: ''; position: absolute; background: rgba(0, 0, 0, 0.85); }
+.m-scope::before { left: 50%; top: calc(50% - min(38vh, 38vw)); width: 1px; height: calc(2 * min(38vh, 38vw)); }
+.m-scope::after { top: 50%; left: calc(50% - min(38vh, 38vw)); height: 1px; width: calc(2 * min(38vh, 38vw)); }
+.m-hp { flex-direction: column; align-items: stretch; gap: 6px; }
+.m-row { display: flex; align-items: center; gap: 8px; }
+.m-ico { width: 16px; text-align: center; opacity: 0.85; }
+.m-armorbar div { background: #5b8def; }
+.m-hp .m-row:last-child b { font-size: 16px; }
+.m-nades { font-size: 14px; margin-top: 2px; }
+.m-adsbtn { right: 124px; bottom: 50px; width: 56px; height: 56px; font-size: 11px; }
+.m-jump { right: 196px; bottom: 90px; width: 60px; height: 60px; font-size: 11px; }
+.m-nade { right: 168px; bottom: 196px; width: 50px; height: 50px; }
+
+/* Barra de ações (10 botões) */
+.emotes { flex-wrap: wrap; justify-content: flex-end; max-width: min(560px, calc(100% - 420px)); }
+.emotes button { width: 48px; height: 48px; font-size: 21px; }
+.emotes button.on { border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent); }
+@media (max-width: 760px) {
+  .emotes { max-width: calc(100% - 24px); gap: 4px; }
+  .emotes button { width: 40px; height: 40px; font-size: 18px; }
+}
+
+/* Rounds */
+.m-alive { position: absolute; top: 62px; left: 50%; transform: translateX(-50%); display: flex; gap: 70px; font-size: 13px; letter-spacing: 2px; }
+.m-alive:empty { display: none; }
+.m-spectate { position: absolute; left: 50%; bottom: 90px; transform: translateX(-50%); padding: 6px 14px; border-radius: 10px; background: rgba(15, 18, 22, 0.7); font-size: 14px; }
+
+/* Agressão, interações, prisão e lista de online */
+.street-actions { position: absolute; right: 12px; bottom: 120px; display: flex; flex-direction: column; gap: 6px; }
+.street-actions button {
+  width: 48px; height: 48px; border-radius: 50%; cursor: pointer; font-size: 22px;
+  border: 1px solid var(--line); background: rgba(22, 26, 31, 0.8);
+}
+.popup {
+  position: absolute; left: 50%; top: 58%; transform: translateX(-50%);
+  min-width: 260px; padding: 12px; border-radius: 14px; display: grid; gap: 8px;
+  background: rgba(22, 26, 31, 0.94); border: 1px solid var(--line); box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4);
+}
+.popup p { margin: 0; text-align: center; font-weight: 700; }
+.popup .row { display: flex; gap: 8px; }
+.popup button { flex: 1; padding: 10px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel-2); color: var(--text); font: inherit; font-weight: 700; cursor: pointer; }
+.popup button.yes { background: var(--accent); color: #111; border-color: var(--accent); }
+.jail-banner {
+  position: absolute; top: 60px; left: 50%; transform: translateX(-50%);
+  padding: 10px 18px; border-radius: 12px; font-weight: 800; font-size: 17px;
+  background: rgba(120, 18, 24, 0.9); border: 1px solid #ff6b6b; white-space: nowrap;
+}
+#roster { z-index: 20; background: rgba(12, 14, 17, 0.55); }
+.roster-card { width: min(420px, 100%); }
+.roster-list { display: grid; gap: 4px; max-height: 55vh; overflow-y: auto; }
+.roster-list .row { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; background: var(--panel-2); }
+.roster-list .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.roster-list .where { margin-left: auto; font-size: 12px; color: var(--muted); }
+.roster-list .empty { color: var(--muted); text-align: center; padding: 12px; }
+#hud-online { cursor: pointer; text-decoration: underline dotted; }
+@media (pointer: coarse) { .street-actions { bottom: 200px; } }
+
+/* Mira da primeira pessoa (avenida) */
+.fp-cross { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); pointer-events: none; }

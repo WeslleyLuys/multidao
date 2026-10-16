@@ -33,6 +33,48 @@ export const TRUCKS = [
   { x: 60, z: 0, team: 1 as TeamId },
 ].map((t) => ({ ...t, halfX: 5, halfZ: 1.6 }));
 
+// Barreira policial no meio da avenida (separa os lados; calçadas livres) e viaturas paradas.
+export const POLICE_LINE = { x: 0, halfX: 1.4, halfZ: 12.5 };
+export const POLICE_VANS = [
+  { x: 9, z: -17.6, halfX: 2.7, halfZ: 1.15 },
+  { x: -9, z: 17.6, halfX: 2.7, halfZ: 1.15 },
+];
+// Prisões: preventiva (cela gradeada na calçada, visível) e "fora do mapa" (quem bate em policial).
+export interface Rect {
+  x: number;
+  z: number;
+  halfX: number;
+  halfZ: number;
+}
+export const JAIL: Record<'cell' | 'outside', Rect> = {
+  cell: { x: 0, z: 19.2, halfX: 3.2, halfZ: 2.2 },
+  outside: { x: 0, z: -80, halfX: 3, halfZ: 3 },
+};
+export const JAIL_MS = 60_000;
+
+// Agressão na avenida
+export const AGGRESSION = {
+  range: 1.7, // alcance do golpe/empurrão (m)
+  intervalMs: 700,
+  push: 1.6, // distância do empurrão (m)
+  knockHits: 3, // golpes em 10 s para cair
+  knockMs: 4000,
+  policeSight: 18, // policial vê até essa distância (olhando para o lado)
+  policeHear: 7, // e percebe tudo perto, mesmo de costas
+};
+
+// Interações em dupla (tecla T)
+export const SOCIALS = ['hug', 'kiss', 'hand'] as const;
+export type Social = (typeof SOCIALS)[number];
+export const SOCIAL_LABEL: Record<Social, string> = { hug: '🤗 Abraçar', kiss: '💋 Beijar', hand: '🤝 Dar as mãos' };
+
+// Tudo que é sólido na avenida (usado pela física no servidor e no cliente).
+export const SOLIDS = [
+  ...TRUCKS.map((t) => ({ x: t.x, z: t.z, halfX: t.halfX, halfZ: t.halfZ })),
+  { x: POLICE_LINE.x, z: 0, halfX: POLICE_LINE.halfX, halfZ: POLICE_LINE.halfZ },
+  ...POLICE_VANS,
+];
+
 export const TICK_RATE = 20;
 export const SNAPSHOT_RATE = 15;
 export const WALK_SPEED = 4;
@@ -87,7 +129,8 @@ export const PRINT_LABEL: Record<Print, string> = {
 // Itens VIP. Enquanto não houver contas e pagamento, ficam liberados para todos
 // (a validação de quem pode usar entra no servidor junto com o sistema de contas).
 export const VIP = new Set<string>(['flag-br', 'flag-pt', 'br-10', 'lula', 'bolsonaro']);
-export const EMOTES = ['wave', 'jump', 'dance', 'clap'] as const;
+// Ações da avenida. As que não são 'jump' ficam em loop até o jogador andar; 'stop' encerra.
+export const EMOTES = ['wave', 'jump', 'dance', 'clap', 'point', 'crouch', 'lie', 'drink', 'smoke', 'pee', 'stop'] as const;
 
 export type Pattern = (typeof PATTERNS)[number];
 export type Slot = (typeof SLOTS)[number];
@@ -100,7 +143,7 @@ export const LIMITS = {
   sign: 24,
   chat: 140,
   chatIntervalMs: 900,
-  emoteIntervalMs: 1200,
+  emoteIntervalMs: 500,
   lookIntervalMs: 1500,
   connectionsPerIp: 4,
 };

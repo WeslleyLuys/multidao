@@ -1,3 +1,4 @@
+import { isMobile } from './polyfills'; // precisa vir primeiro
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import './style.css';
@@ -5,13 +6,18 @@ import logo from './logo.svg?raw';
 import {
   CLOTH_COLORS, EMOTES, GAME, HAIR_COLORS, ITEMS, ITEM_LABEL, LIMITS, OUTFIT, OUTFIT_LABEL, PATTERNS, PATTERN_LABEL,
   PRINTS, PRINT_LABEL, SKIN_TONES, SLOTS, SLOT_LABEL, TEAMS, VIP,
-  type Emote, type Slot, type TeamId,
+  AGGRESSION, JAIL, SOCIALS, SOCIAL_LABEL,
+  type Emote, type Slot, type Social, type TeamId,
 } from '../../shared/config';
-import { SNAP_STRIDE, type PlayerInfo, type ServerMsg } from '../../shared/protocol';
+import { SNAP_STRIDE, type AttackKind, type PlayerInfo, type RosterEntry, type ServerMsg } from '../../shared/protocol';
 import { DEFAULT_LOOK, randomLook, sanitizeLook, teamClothColors, type Look } from '../../shared/look';
 import { step } from '../../shared/physics';
 import { Avatar } from './avatar';
 import { loadCharacter } from './character';
+import { MatchClient } from './match/matchClient';
+import { playHurt, playShot, unlockAudio } from './match/sfx';
+import { MATCH_SIZES, type MatchSize } from '../../shared/arena';
+import { ROUND_OPTIONS } from '../../shared/protocol';
 import { buildWorld } from './world';
 import { Graphics, QUALITY_LABEL, type Quality } from './graphics';
 import { waveTime } from './wave';
@@ -69,7 +75,8 @@ await loadCharacter();
 
 // ---------- Estado de tela ----------
 // lobby: menu principal · playing: na avenida · menu: pausa (Esc) · editing: trocando visual em jogo
-type Screen = 'lobby' | 'playing' | 'menu' | 'editing';
+// events: escolhendo um evento · match: dentro de uma partida de evento
+type Screen = 'lobby' | 'playing' | 'menu' | 'editing' | 'events' | 'match';
 let screen: Screen = 'lobby';
 const inGame = () => screen !== 'lobby';
 
@@ -78,10 +85,18 @@ const canvas = $<HTMLCanvasElement>('#game');
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 1200);
 const gfx = new Graphics(canvas, scene, camera);
-gfx.renderer.debug.onShaderError = (gl, _program, vs, fs) => {
-  showFatal(`Erro de shader (${gl.getParameter(gl.RENDERER)}):\n${gl.getShaderInfoLog(vs) ?? ''}\n${gl.getShaderInfoLog(fs) ?? ''}`);
+let shaderErrors = 0;
+gfx.renderer.debug.onShaderError = (gl, program, vs, fs) => {
+  if (gl.isContextLost()) return; // já avisado pelo evento abaixo
+  if (shaderErrors++ > 2) return;
+  const logs = [gl.getProgramInfoLog(program), gl.getShaderInfoLog(vs), gl.getShaderInfoLog(fs)].filter(Boolean).join('\n').slice(0, 1500);
+  showFatal(`Erro de shader (${gl.getParameter(gl.VERSION)}):\n${logs || '(sem detalhes)'}`);
 };
-const world = buildWorld(scene);
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  showFatal('A placa de vídeo reiniciou o WebGL (contexto perdido). Recarregue a página; se repetir, use Gráficos: Baixa no menu.');
+});
+const world = buildWorld(scene, isMobile);
 world.setDetail(gfx.quality !== 'low');
 
 // ---------- Prévia do avatar no lobby ----------
@@ -249,10 +264,18 @@ interface Remote {
   info: PlayerInfo;
   avatar: Avatar;
   buf: { t: number; x: number; z: number; yaw: number; mv: number }[];
+  skip?: boolean; // anima em quadros alternados quando está longe
+  acc: number;
 }
 
 const net = new Net();
 const input = new Input(canvas, $('#joystick'));
+input.active = () => screen === 'playing' && !match;
+// Clique esquerdo bate, direito empurra (como o tiro no FPS).
+input.onClick = (button) => {
+  if (button === 0) doAttack('hit');
+  else if (button === 2) doAttack('push');
+};
 const remotes = new Map<number, Remote>();
 let selfId = 0;
 let selfAvatar: Avatar | undefined;
@@ -263,9 +286,11 @@ const serverSelf = { x: 0, z: 0, has: false };
 
 function addPlayer(p: PlayerInfo) {
   if (p.id === selfId || remotes.has(p.id)) return;
-  const avatar = new Avatar(p.team, p.look, p.bot ? undefined : p.name);
+  const police = p.role === 'police';
+  const avatar = new Avatar(p.team, p.look, police ? 'Polícia' : p.bot ? undefined : p.name, false, police ? '#5b8def' : undefined);
+  if (police) avatar.setPatrol(3); // fuzil
   scene.add(avatar.root);
-  remotes.set(p.id, { info: p, avatar, buf: [] });
+  remotes.set(p.id, { info: p, avatar, buf: [], acc: 0 });
 }
 
 function removePlayer(id: number) {
@@ -315,7 +340,8 @@ function setScreen(next: Screen) {
   screen = next;
   lobby.hidden = next !== 'lobby' && next !== 'editing';
   $('#menu').hidden = next !== 'menu';
-  $('#hud').hidden = next === 'lobby';
+  $('#events').hidden = next !== 'events';
+  $('#hud').hidden = next === 'lobby' || next === 'match';
   input.enabled = next === 'playing' && document.activeElement !== chatInput;
   if (next !== 'playing') chatInput.blur();
 
@@ -388,11 +414,24 @@ net.onStatus = (online) => {
     if (!online) onlineEl.textContent = 'Conectando…';
   }
 };
-// Ao reconectar no meio do jogo, entra de novo automaticamente.
-net.onOpen = () => inGame() && join();
+// Ao reconectar no meio do jogo, entra de novo automaticamente (a partida em andamento se perde).
+net.onOpen = () => {
+  if (match) exitMatch(false);
+  else if (inGame()) join();
+};
 
 net.on((msg: ServerMsg) => {
+  if (match?.onMessage(msg)) return;
   switch (msg.t) {
+    case 'match':
+      startMatch(msg);
+      break;
+    case 'queued':
+      showQueue(msg);
+      break;
+    case 'unqueued':
+      queueBar.hidden = true;
+      break;
     case 'stats': {
       teamCounts = msg.teams;
       onlineEl.textContent = `${msg.online} ${msg.online === 1 ? 'pessoa' : 'pessoas'} na avenida agora`;
@@ -467,6 +506,71 @@ net.on((msg: ServerMsg) => {
         enterBtn.disabled = false;
       }
       break;
+
+    // ----- Agressão, interações, prisão -----
+    case 'attack': {
+      const a = avatarOf(msg.id);
+      a?.playAnim(msg.kind === 'push' ? 'shove' : a.hasItem ? 'hitItem' : 'hit');
+      const at = a?.root.position;
+      if (at) playShot(0, at.distanceTo(camera.position)); // som do impacto
+      if (msg.target) {
+        avatarOf(msg.target)?.playAnim(msg.knocked ? 'knockdown' : 'stagger');
+        if (msg.target === selfId) {
+          playHurt();
+          if (msg.knocked) {
+            knockUntil = performance.now() + AGGRESSION.knockMs;
+            systemMessage('Você caiu! Levanta em alguns segundos…');
+          }
+        }
+      }
+      break;
+    }
+    case 'moved':
+      // O servidor reposicionou você (empurrão, prisão, interação).
+      self.x = serverSelf.x = msg.x;
+      self.z = serverSelf.z = msg.z;
+      if (msg.yaw !== undefined) {
+        self.yaw = msg.yaw;
+        if (selfAvatar) selfAvatar.root.rotation.y = msg.yaw;
+      }
+      if (selfAvatar) selfAvatar.root.position.set(self.x, 0, self.z);
+      break;
+    case 'jail':
+      jailInfo = { until: performance.now() + (msg.until - msg.now), where: msg.where };
+      selfAvatar?.playEmote('stop');
+      systemMessage(`🚔 Você foi preso por 1 minuto: ${msg.reason}.`);
+      updateJailBanner();
+      break;
+    case 'free':
+      jailInfo = undefined;
+      updateJailBanner();
+      systemMessage('🔓 Você foi solto. Comporte-se!');
+      break;
+    case 'socialAsk':
+      showAsk(msg.from, msg.kind);
+      break;
+    case 'socialStart': {
+      const a = avatarOf(msg.a);
+      const b = avatarOf(msg.b);
+      // Mãos dadas: quem pediu tem o parceiro à direita.
+      a?.playAnim(msg.kind, 'R');
+      b?.playAnim(msg.kind, 'L');
+      if (a && msg.a !== selfId) a.root.rotation.y = msg.ayaw;
+      if (b && msg.b !== selfId) b.root.rotation.y = msg.byaw;
+      break;
+    }
+    case 'socialEnd':
+      for (const id of [msg.a, msg.b]) {
+        const av = avatarOf(id);
+        if (av && (['hug', 'kiss', 'hand'] as const).includes(av.currentEmote as Social)) av.playEmote('stop');
+      }
+      break;
+    case 'notice':
+      systemMessage(msg.text);
+      break;
+    case 'roster':
+      renderRoster(msg.list);
+      break;
   }
 });
 
@@ -485,6 +589,231 @@ $('#menu-look').addEventListener('click', openEdit);
 $('#menu-exit').addEventListener('click', exitToLobby);
 $('#menu-btn').addEventListener('click', () => setScreen(screen === 'menu' ? 'playing' : 'menu'));
 $('#menu').addEventListener('click', (e) => e.target === e.currentTarget && setScreen('playing'));
+
+// ---------- Eventos (FPS) ----------
+let match: MatchClient | undefined;
+let eventSize: MatchSize = 4;
+let eventRounds = 5;
+const queueBar = $('#queue-bar');
+
+function renderEvents() {
+  $('#event-sizes').replaceChildren(
+    ...MATCH_SIZES.map((s) => button('chip', `${s}x${s}`, eventSize === s, () => {
+      eventSize = s;
+      renderEvents();
+    })),
+  );
+  $('#event-rounds').replaceChildren(
+    ...ROUND_OPTIONS.map((r) => button('chip', r ? `${r} ${r === 1 ? 'round' : 'rounds'}` : 'Livre (renasce)', eventRounds === r, () => {
+      eventRounds = r;
+      renderEvents();
+    })),
+  );
+  $('#event-hint').textContent = eventRounds
+    ? `Quem morre só volta no próximo round. Vence o round quem eliminar o outro lado (ou tiver mais gente viva em 2:30). Ganha a partida quem vencer ${Math.floor(eventRounds / 2) + 1} ${eventRounds === 1 ? 'round' : 'rounds'}.`
+    : '3 minutos com renascimento. Cada abate vale 1 ponto para o seu lado e 100 para você.';
+}
+renderEvents();
+
+function openEvents() {
+  if (screen === 'match') return;
+  setScreen('events');
+}
+function queueEvent(bots: boolean) {
+  unlockAudio();
+  net.send({ t: 'queue', mode: 'fps', size: eventSize, rounds: eventRounds, bots });
+  setScreen('playing');
+}
+$('#menu-events').addEventListener('click', openEvents);
+$('#hud-events').addEventListener('click', openEvents);
+$('#event-close').addEventListener('click', () => setScreen('playing'));
+$('#event-queue').addEventListener('click', () => queueEvent(false));
+$('#event-bots').addEventListener('click', () => queueEvent(true));
+$('#queue-cancel').addEventListener('click', () => net.send({ t: 'unqueue' }));
+$('#queue-bots').addEventListener('click', () => net.send({ t: 'queue', mode: 'fps', size: eventSize, rounds: eventRounds, bots: true }));
+
+function showQueue(msg: Extract<ServerMsg, { t: 'queued' }>) {
+  eventSize = msg.size;
+  eventRounds = msg.rounds;
+  queueBar.hidden = false;
+  const need = msg.size;
+  $('#queue-text').textContent =
+    `Procurando FPS ${need}x${need}${msg.rounds ? ` (${msg.rounds} rounds)` : ""} · ${TEAMS[0].name} ${msg.teams[0]}/${need} · ${TEAMS[1].name} ${msg.teams[1]}/${need}` +
+    (msg.startsIn !== null ? ` · começa com bots em ${msg.startsIn}s` : '');
+}
+
+function startMatch(msg: Extract<ServerMsg, { t: 'match' }>) {
+  queueBar.hidden = true;
+  match?.dispose();
+  // Sai da avenida (o servidor já nos removeu de lá).
+  clearPlayers();
+  selfId = 0;
+  setScreen('match');
+  match = new MatchClient(msg, net, gfx, canvas, () => exitMatch(true));
+  gfx.setTimeOfDay(0.62); // arena: sempre fim de tarde, boa visibilidade
+}
+
+function exitMatch(rejoin: boolean) {
+  if (!match) return;
+  match.dispose();
+  match = undefined;
+  gfx.setScene(scene, camera);
+  lastClock = -Infinity; // volta para a hora real no próximo quadro
+  setScreen('playing');
+  join();
+  if (rejoin) systemMessage('De volta à avenida. Esc → Eventos para jogar de novo.');
+}
+
+// ---------- Avenida: agressão, interações, prisão e lista de online ----------
+const socialMenu = $('#social-menu');
+const socialAsk = $('#social-ask');
+const jailBanner = $('#jail-banner');
+let jailInfo: { until: number; where: 'cell' | 'outside' } | undefined;
+let knockUntil = 0;
+let lastAttack = 0;
+let socialTarget = 0;
+let askFrom = 0;
+let askTimer = 0;
+
+function avatarOf(id: number) {
+  return id === selfId ? selfAvatar : remotes.get(id)?.avatar;
+}
+
+function doAttack(kind: AttackKind) {
+  const now = performance.now();
+  if (now - lastAttack < AGGRESSION.intervalMs || jailInfo || now < knockUntil) return;
+  lastAttack = now;
+  net.send({ t: 'attack', kind });
+}
+
+/** Jogador (ou bot) mais próximo de frente para mim, até `range` metros. */
+function personInFront(range = 2.6) {
+  let best: { id: number; r: Remote } | undefined;
+  let bestD = range;
+  for (const [id, r] of remotes) {
+    const p = r.avatar.root.position;
+    const dx = p.x - self.x;
+    const dz = p.z - self.z;
+    const d = Math.hypot(dx, dz);
+    let ang = Math.atan2(dx, dz) - self.yaw;
+    while (ang > Math.PI) ang -= Math.PI * 2;
+    while (ang < -Math.PI) ang += Math.PI * 2;
+    if (d < bestD && Math.abs(ang) < 0.9) {
+      best = { id, r };
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+function openSocialMenu() {
+  if (jailInfo) return systemMessage('Preso não pode interagir. 🚔');
+  const found = personInFront();
+  if (!found) return systemMessage('Chegue perto de alguém e fique de frente para interagir (T).');
+  socialTarget = found.id;
+  const who = found.r.info.role === 'police' ? 'o policial' : found.r.info.bot ? 'esta pessoa' : found.r.info.name;
+  const title = document.createElement('p');
+  title.textContent = `Interagir com ${who}`;
+  const row = document.createElement('div');
+  row.className = 'row';
+  SOCIALS.forEach((k, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = `${i + 1} ${SOCIAL_LABEL[k]}`;
+    b.addEventListener('click', () => chooseSocial(k));
+    row.append(b);
+  });
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.textContent = 'Cancelar (Esc)';
+  close.addEventListener('click', closeSocialMenu);
+  socialMenu.replaceChildren(title, row, close);
+  socialMenu.hidden = false;
+}
+
+function closeSocialMenu() {
+  socialMenu.hidden = true;
+}
+
+function chooseSocial(kind: Social) {
+  closeSocialMenu();
+  if (socialTarget) net.send({ t: 'social', kind, target: socialTarget });
+}
+
+function showAsk(from: number, kind: Social) {
+  askFrom = from;
+  const name = remotes.get(from)?.info.name ?? 'Alguém';
+  const p = document.createElement('p');
+  p.textContent = `${name} quer: ${SOCIAL_LABEL[kind]}`;
+  const row = document.createElement('div');
+  row.className = 'row';
+  const yes = document.createElement('button');
+  yes.className = 'yes';
+  yes.textContent = 'Aceitar (Y)';
+  yes.addEventListener('click', () => answerAsk(true));
+  const no = document.createElement('button');
+  no.textContent = 'Recusar (N)';
+  no.addEventListener('click', () => answerAsk(false));
+  row.append(yes, no);
+  socialAsk.replaceChildren(p, row);
+  socialAsk.hidden = false;
+  clearTimeout(askTimer);
+  askTimer = window.setTimeout(() => answerAsk(false), 15000);
+}
+
+function answerAsk(accept: boolean) {
+  if (socialAsk.hidden) return;
+  socialAsk.hidden = true;
+  clearTimeout(askTimer);
+  net.send({ t: 'socialReply', from: askFrom, accept });
+}
+
+function updateJailBanner() {
+  if (!jailInfo) {
+    jailBanner.hidden = true;
+    return;
+  }
+  const s = Math.max(0, Math.ceil((jailInfo.until - performance.now()) / 1000));
+  jailBanner.hidden = false;
+  jailBanner.textContent = `🚔 ${jailInfo.where === 'outside' ? 'Preso fora da avenida' : 'Prisão preventiva'} — ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+setInterval(updateJailBanner, 250);
+
+function renderRoster(list: RosterEntry[]) {
+  const box = $('#roster-list');
+  const WHERE: Record<RosterEntry['where'], string> = { avenida: 'na avenida', evento: '🎯 em evento', fila: '⏳ na fila', preso: '🚔 preso' };
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'empty';
+    empty.textContent = 'Ninguém online agora.';
+    return box.replaceChildren(empty);
+  }
+  box.replaceChildren(
+    ...list.map((r) => {
+      const row = document.createElement('div');
+      row.className = 'row';
+      const dot = document.createElement('span');
+      dot.className = 'dot';
+      dot.style.background = TEAMS[r.team].color;
+      const name = document.createElement('b');
+      name.textContent = r.name;
+      const where = document.createElement('span');
+      where.className = 'where';
+      where.textContent = `${TEAMS[r.team].name} · ${WHERE[r.where]}`;
+      row.append(dot, name, where);
+      return row;
+    }),
+  );
+}
+$('#hud-online').addEventListener('click', () => {
+  net.send({ t: 'who' });
+  $('#roster').hidden = false;
+});
+$('#roster-close').addEventListener('click', () => ($('#roster').hidden = true));
+$('#roster').addEventListener('click', (e) => e.target === e.currentTarget && ($('#roster').hidden = true));
+$('#street-actions').querySelectorAll<HTMLButtonElement>('button').forEach((b) =>
+  b.addEventListener('click', () => (b.dataset.act === 'social' ? openSocialMenu() : doAttack(b.dataset.act as AttackKind))),
+);
 
 // ---------- Chat ----------
 const chatLog = $('#chat-log');
@@ -514,10 +843,13 @@ function systemMessage(text: string) {
 addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     if (document.activeElement === chatInput) return; // o próprio chat trata (só fecha o campo)
+    if (!socialMenu.hidden) return closeSocialMenu();
+    if (!$('#roster').hidden) return ($('#roster').hidden = true);
     if (screen === 'playing') setScreen('menu');
     else if (screen === 'menu') setScreen('playing');
     else if (screen === 'editing') cancelEdit();
-    return;
+    else if (screen === 'events') setScreen('playing');
+    return; // na partida, o Esc é tratado pelo MatchClient
   }
   if (screen !== 'playing' || isTyping(e.target)) return;
   if (e.key === 'Enter') {
@@ -525,8 +857,27 @@ addEventListener('keydown', (e) => {
     chatInput.focus();
     return;
   }
-  const n = Number(e.key);
-  if (n >= 1 && n <= EMOTES.length) doEmote(EMOTES[n - 1]);
+  if (e.repeat) return;
+  if (e.code === 'Space') {
+    e.preventDefault();
+    doEmote('jump');
+    return;
+  }
+  if (e.code === 'KeyC') return doEmote('crouch');
+  if (e.code === 'KeyV') return setView(!input.firstPerson);
+  if (e.code === 'KeyF') return doAttack('hit');
+  if (e.code === 'KeyG') return doAttack('push');
+  if (e.code === 'KeyT') return openSocialMenu();
+  if (!socialAsk.hidden && (e.code === 'KeyY' || e.code === 'KeyN')) return answerAsk(e.code === 'KeyY');
+  // Com o menu de interação aberto, 1–3 escolhem a interação.
+  if (!socialMenu.hidden) {
+    const i = Number(e.key) - 1;
+    if (i >= 0 && i < SOCIALS.length) chooseSocial(SOCIALS[i]);
+    return;
+  }
+  // 1–9 e 0 = as 10 ações da barra
+  const idx = e.key === '0' ? 9 : Number(e.key) - 1;
+  if (idx >= 0 && idx < ACTIONS.length) doEmote(ACTIONS[idx]);
 });
 chatInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') {
@@ -540,28 +891,41 @@ chatInput.addEventListener('focus', () => (input.enabled = false));
 chatInput.addEventListener('blur', () => (input.enabled = screen === 'playing'));
 
 // ---------- Emotes ----------
-const EMOTE_ICON: Record<Emote, [string, string]> = {
-  wave: ['👋', 'Acenar'], jump: ['⬆️', 'Pular'], dance: ['💃', 'Dançar'], clap: ['👏', 'Aplaudir'],
+// Ações da avenida: ficam em loop até andar; clicar de novo na mesma ação encerra.
+const ACTIONS = EMOTES.filter((e) => e !== 'stop');
+const EMOTE_ICON: Record<Exclude<Emote, 'stop'>, [string, string]> = {
+  wave: ['👋', 'Acenar'], jump: ['⬆️', 'Pular (Espaço)'], dance: ['💃', 'Dançar'], clap: ['👏', 'Aplaudir'],
+  point: ['👉', 'Apontar'], crouch: ['🧎', 'Agachar (C)'], lie: ['🛌', 'Deitar'], drink: ['🍺', 'Beber'],
+  smoke: ['🚬', 'Fumar'], pee: ['💦', 'Mijar na rua'],
 };
 let lastEmote = 0;
 function doEmote(e: Emote) {
   const now = performance.now();
   if (now - lastEmote < LIMITS.emoteIntervalMs) return;
   lastEmote = now;
+  if (e !== 'jump' && selfAvatar?.currentEmote === e) e = 'stop';
   selfAvatar?.playEmote(e);
   net.send({ t: 'emote', e });
+  renderEmoteBar();
+}
+function renderEmoteBar() {
+  const active = selfAvatar?.currentEmote;
+  $('#emotes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.e === active));
 }
 $('#emotes').replaceChildren(
-  ...EMOTES.map((e, i) => {
+  ...ACTIONS.map((e, i) => {
     const b = document.createElement('button');
     b.type = 'button';
+    b.dataset.e = e;
     b.title = EMOTE_ICON[e][1];
-    b.innerHTML = `<kbd>${i + 1}</kbd>`;
+    b.innerHTML = `<kbd>${(i + 1) % 10}</kbd>`;
     b.append(EMOTE_ICON[e][0]);
     b.addEventListener('click', () => doEmote(e));
     return b;
   }),
 );
+// Ao andar, a ação acaba; a barra acompanha.
+setInterval(renderEmoteBar, 300);
 
 // ---------- Loop ----------
 const INTERP_DELAY = 130;
@@ -575,8 +939,13 @@ function angleLerp(a: number, b: number, k: number) {
   return a + d * k;
 }
 
+let lastSentYaw = 0;
 function sendInput(dx: number, dz: number, run: boolean, now: number) {
-  const changed = Math.abs(dx - lastSent.dx) > 0.02 || Math.abs(dz - lastSent.dz) > 0.02 || run !== lastSent.run;
+  // Também envia quando só a direção do olhar muda (o servidor usa para mirar golpes/interações).
+  let yawDiff = Math.abs(self.yaw - lastSentYaw) % (Math.PI * 2);
+  if (yawDiff > Math.PI) yawDiff = Math.PI * 2 - yawDiff;
+  const changed = Math.abs(dx - lastSent.dx) > 0.02 || Math.abs(dz - lastSent.dz) > 0.02 || run !== lastSent.run || yawDiff > 0.08;
+  if (changed) lastSentYaw = self.yaw;
   if ((changed && now - lastSent.t > 50) || now - lastSent.t > 500) {
     net.send({ t: 'input', dx, dz, run, yaw: self.yaw });
     lastSent = { dx, dz, run, t: now };
@@ -597,10 +966,14 @@ function updateSelf(dt: number, now: number) {
     dx /= len;
     dz /= len;
   }
+  // Caído no chão: não anda.
+  if (now < knockUntil) dx = dz = 0;
 
-  const moved = step(self, dx, dz, input.run, dt);
+  const moved = step(self, dx, dz, input.run, dt, jailInfo ? JAIL[jailInfo.where] : undefined);
   self.moving = moved ? (input.run ? 2 : 1) : 0;
-  if (moved) self.yaw = Math.atan2(dx, dz);
+  // Em primeira pessoa o corpo olha para onde a câmera mira (golpes e interações vão nessa direção).
+  if (input.firstPerson) self.yaw = input.camYaw + Math.PI;
+  else if (moved) self.yaw = Math.atan2(dx, dz);
   sendInput(Math.round(dx * 100) / 100, Math.round(dz * 100) / 100, input.run, now);
 
   // Reconciliação suave com a posição autoritativa do servidor.
@@ -624,6 +997,19 @@ function updateSelf(dt: number, now: number) {
     selfAvatar.update(dt, self.moving);
   }
 
+  if (input.firstPerson) {
+    // Primeira pessoa: câmera nos olhos, olhando para onde o mouse mira.
+    const emote = selfAvatar?.currentEmote;
+    const eye = emote === 'lie' || emote === 'knockdown' ? 0.45 : emote === 'crouch' ? 1.1 : 1.62;
+    const bob = self.moving ? Math.sin(now / (self.moving === 2 ? 70 : 110)) * 0.03 : 0;
+    camera.position.set(self.x + Math.sin(self.yaw) * 0.12, eye + bob, self.z + Math.cos(self.yaw) * 0.12);
+    camera.rotation.set(input.lookPitch, input.camYaw, 0, 'YXZ');
+    camTarget.set(self.x, 0, self.z);
+    if (selfAvatar) selfAvatar.root.visible = false;
+    return;
+  }
+  if (selfAvatar) selfAvatar.root.visible = true;
+
   // Câmera em terceira pessoa
   camTarget.set(self.x, 1.6, self.z);
   const d = input.camDist;
@@ -633,8 +1019,27 @@ function updateSelf(dt: number, now: number) {
     camTarget.y + Math.sin(p) * d,
     camTarget.z + Math.cos(input.camYaw) * Math.cos(p) * d,
   );
+  camera.rotation.order = 'XYZ';
   camera.lookAt(camTarget);
 }
+
+// ---------- Primeira / terceira pessoa ----------
+const VIEW_KEY = 'multidao-view';
+function setView(first: boolean) {
+  input.setFirstPerson(first);
+  try {
+    localStorage.setItem(VIEW_KEY, first ? 'first' : 'third');
+  } catch {}
+  $('#menu-view').textContent = `Câmera: ${first ? '1ª pessoa' : '3ª pessoa'} (V)`;
+  $('#fp-cross').hidden = !first;
+  if (first && screen === 'playing') systemMessage('Primeira pessoa: clique para travar o mouse e mirar. V volta para terceira pessoa.');
+}
+try {
+  setView(localStorage.getItem(VIEW_KEY) === 'first');
+} catch {
+  setView(false);
+}
+$('#menu-view').addEventListener('click', () => setView(!input.firstPerson));
 
 function updateRemotes(dt: number, now: number) {
   const renderT = now - INTERP_DELAY;
@@ -655,8 +1060,32 @@ function updateRemotes(dt: number, now: number) {
     const root = r.avatar.root;
     root.position.set(a.x + (b.x - a.x) * k, 0, a.z + (b.z - a.z) * k);
     root.rotation.y = angleLerp(root.rotation.y, angleLerp(a.yaw, b.yaw, k), 1 - Math.exp(-dt * 14));
-    r.avatar.update(dt, b.mv);
+    // Economia: longe da câmera some; a meia distância anima em quadros alternados.
+    const dist = root.position.distanceTo(camera.position);
+    root.visible = dist < AVATAR_FAR;
+    if (!root.visible) continue;
+    r.skip = dist > AVATAR_FAR * 0.5 && !r.skip;
+    if (!r.skip) r.avatar.update(r.acc + dt, b.mv);
+    r.acc = r.skip ? r.acc + dt : 0;
   }
+}
+const AVATAR_FAR = isMobile ? 45 : 90;
+
+// ---------- Dia e noite ----------
+// Um dia inteiro a cada 16 minutos, derivado do relógio: todo mundo vê a mesma hora.
+const DAY_CYCLE_S = 16 * 60;
+let lastClock = -Infinity;
+function updateClock(now: number) {
+  lastClock = now;
+  // ?hora=22 na URL fixa a hora (útil para testar a noite).
+  const forced = Number(new URLSearchParams(location.search).get('hora'));
+  const t = Number.isFinite(forced) && location.search.includes('hora=') ? (forced / 24) % 1 : (Date.now() / 1000 / DAY_CYCLE_S) % 1;
+  gfx.setTimeOfDay(t);
+  world.setNight(gfx.night);
+  const mins = Math.floor(t * 24 * 60);
+  const label = `${gfx.night > 0.5 ? '🌙' : '☀️'} ${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  const el = $('#hud-clock');
+  if (el.textContent !== label) el.textContent = label;
 }
 
 let lastT = performance.now();
@@ -665,6 +1094,13 @@ function renderFrame(now: number) {
   lastT = now;
   const t = now / 1000;
   waveTime.value = t;
+
+  if (match) {
+    match.update(dt, now);
+    gfx.render(now);
+    return;
+  }
+  if (now - lastClock > 500) updateClock(now);
 
   if (inGame() && selfAvatar) {
     updateSelf(dt, now);
@@ -699,6 +1135,7 @@ function frame(now: number) {
   }
 }
 requestAnimationFrame(frame);
+(window as any).__gameStarted = true;
 
 // Latência (útil para depuração no console)
 setInterval(() => net.send({ t: 'ping', ts: performance.now() }), 5000);

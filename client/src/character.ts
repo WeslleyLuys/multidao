@@ -165,12 +165,12 @@ async function loadPrints() {
       ctx.lineWidth = 16;
       ctx.strokeStyle = '#ffdf00';
       ctx.stroke();
-      if (BRAZIL_FLAG) ctx.drawImage(BRAZIL_FLAG, 186, 128, 140, 98);
+      if (BRAZIL_FLAG) ctx.drawImage(BRAZIL_FLAG, 196, 118, 120, 84);
       ctx.fillStyle = '#ffdf00';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
-      ctx.font = '900 80px system-ui, sans-serif';
-      ctx.fillText('BOLSONARO', 256, 320, 420);
+      ctx.font = '900 96px system-ui, sans-serif';
+      ctx.fillText('BOLSONARO', 256, 300, 440);
     } else if (id === 'br-10') {
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -240,14 +240,6 @@ const OUTFIT_GLSL = /* glsl */ `
     return n > 0.95 ? 2.0 : n > 0.72 ? 1.0 : 0.0;
   }
 
-  // Tecido: estampa + leve variação de trama.
-  vec3 cloth(vec3 base, vec3 acc, float pat, vec3 m, int part) {
-    float k = patternMask(pat, m, part);
-    vec3 c = k > 1.5 ? base * 0.55 : mix(base, acc, k);
-    outRough = 0.88;
-    return c * (0.94 + 0.06 * noise(m * 70.0));
-  }
-
   // Posição ao longo do braço: 0 ombro, 1 cotovelo, 2 pulso (>2 = mão).
   float armT(vec3 P) {
     vec3 se = uElbow - uShoulder;
@@ -258,107 +250,119 @@ const OUTFIT_GLSL = /* glsl */ `
   }
   // Posição ao longo da perna: <0 acima do quadril, 1 joelho, 2 tornozelo (>2 = pé).
   float legT(float y) {
-    if (y > uHip.y) return (uHip.y - y) / (uHip.y - uKnee.y);
     if (y > uKnee.y) return (uHip.y - y) / (uHip.y - uKnee.y);
     if (y > uAnkle.y) return 1.0 + (uKnee.y - y) / (uKnee.y - uAnkle.y);
     return 2.0 + (uAnkle.y - y) / max(uAnkle.y, 0.01);
   }
 
-  vec3 skin() { outRough = 0.55; return OUT_SKIN; }
-  vec3 hem(vec3 c, float t, float edge) { return t > edge - 0.05 ? c * 0.8 : c; }
-
-  vec3 shoes(vec3 p, vec3 m, float feetS) {
-    if (feetS > 2.5) return skin();                                            // descalço
-    if (feetS > 1.5) {                                                          // chinelo
-      if (p.y < 0.055) { outRough = 0.6; return OUT_C3; }
-      if (p.y < 0.14 && abs(abs(p.x) - uAnkle.x) < 0.035 && p.z > uAnkle.z + 0.08) { outRough = 0.5; return OUT_A3; }
-      return skin();
-    }
-    if (p.y < 0.065) { outRough = 0.6; return feetS > 0.5 ? OUT_C3 * 0.35 : OUT_A3; } // sola
-    vec3 c = cloth(OUT_C3, OUT_A3, OUT_PAT.w, m, 3);
-    outRough = feetS > 0.5 ? 0.4 : 0.6;
-    return c;
-  }
-
+  // Estrutura em duas etapas (importante para o Direct3D/ANGLE no Windows):
+  // 1) decide o que cobre o pixel (pele, cabelo, uma peça ou uma cor fixa);
+  // 2) calcula estampa e trama UMA vez só. Assim o shader compilado fica pequeno.
   vec3 outfitColor() {
     vec3 p = vRest;
     vec3 m = vRest * uScale;
     vec3 P = vec3(abs(p.x), p.y, p.z);
     float headS = OUT_STYLE.x, torsoS = OUT_STYLE.y, legsS = OUT_STYLE.z, feetS = OUT_STYLE.w;
 
-    // ----- Cabeça e pescoço -----
+    int piece = -1;          // 0 cabeça, 1 tronco, 2 pernas, 3 pés; -1 = cor direta
+    vec3 direct = OUT_SKIN;  // usada quando piece < 0
+    float shade = 1.0;       // escurecimento (barras, golas)
+    outRough = 0.55;
+    bool printable = false;
+
     if (vGroup.x > 0.5) {
+      // ----- Cabeça e pescoço -----
       vec3 h = p - uHeadC;
-      if (h.y < -0.24) return skin(); // pescoço
-      if (h.z > 0.17) {
-        vec2 e = vec2(abs(h.x) - 0.1, h.y);
-        float d = length(e * vec2(1.0, 0.8));
-        if (d < 0.026) { outRough = 0.15; return d < 0.011 && e.x > 0.0 && h.y > 0.004 ? vec3(0.9) : vec3(0.04); }
-        if (abs(e.x) < 0.05 && abs(h.y - 0.075 + abs(e.x) * 0.2) < 0.012) return OUT_HAIR * 0.85;
-        if (abs(h.x) < 0.045 && abs(h.y + 0.135) < 0.008) return OUT_SKIN * 0.72;
-      }
       float hairLine = mix(0.12, -0.17, clamp(-h.z * 3.5, 0.0, 1.0));
-      bool hair = h.y > hairLine;
-      vec3 hairC = OUT_HAIR * (0.85 + 0.15 * noise(p * 40.0));
-      if (headS < 0.5) { outRough = 0.7; return hair ? hairC : skin(); }       // cabelo
-      if (headS < 1.5) return skin();                                         // careca
-      if (headS < 2.5) {                                                      // boné
-        if (h.y > 0.14) { vec3 c = cloth(OUT_C0, OUT_A0, OUT_PAT.x, m, 0); return h.y < 0.17 ? c * 0.82 : c; }
-        return hair ? hairC : skin();
+      bool hair = h.y > hairLine && h.y > -0.24;
+      bool face = h.z > 0.17 && h.y > -0.24;
+      vec2 e = vec2(abs(h.x) - 0.1, h.y);
+      float eyeD = length(e * vec2(1.0, 0.8));
+      if (face && eyeD < 0.026) {
+        direct = (eyeD < 0.011 && e.x > 0.0 && h.y > 0.004) ? vec3(0.9) : vec3(0.04);
+        outRough = 0.15;
+      } else if (face && abs(e.x) < 0.05 && abs(h.y - 0.075 + abs(e.x) * 0.2) < 0.012) {
+        direct = OUT_HAIR * 0.85;
+      } else if (face && abs(h.x) < 0.045 && abs(h.y + 0.135) < 0.008) {
+        direct = OUT_SKIN * 0.72;
+      } else if (headS > 1.5 && headS < 2.5 && h.y > 0.14) {          // boné
+        piece = 0; shade = h.y < 0.17 ? 0.82 : 1.0;
+      } else if (headS > 2.5 && headS < 3.5 && h.y > 0.03) {          // gorro
+        piece = 0; shade = h.y < 0.1 ? 0.85 : 1.0;
+      } else if (headS > 3.5 && abs(h.y - 0.13) < 0.05) {             // bandana
+        piece = 0;
+      } else if (hair && (headS < 0.5 || headS > 1.5) && !(headS > 2.5 && headS < 3.5)) {
+        direct = OUT_HAIR; outRough = 0.7; shade = 0.9;
       }
-      if (headS < 3.5) {                                                      // gorro
-        if (h.y > 0.03) { vec3 c = cloth(OUT_C0, OUT_A0, OUT_PAT.x, m, 0); return h.y < 0.1 ? c * 0.85 : c; }
-        return skin();
-      }
-      if (abs(h.y - 0.13) < 0.05) return cloth(OUT_C0, OUT_A0, OUT_PAT.x, m, 0); // bandana
-      return hair ? hairC : skin();
-    }
-
-    // ----- Braços -----
-    if (vGroup.y > 0.5) {
+    } else if (vGroup.y > 0.5) {
+      // ----- Braços -----
       float t = armT(P);
-      if (t >= 2.0) return skin();                                             // mão
       float sleeve = torsoS < 0.5 ? 0.5 : torsoS < 1.5 ? -0.2 : 1.97;
-      if (t >= sleeve) return skin();
-      vec3 c = cloth(OUT_C1, OUT_A1, OUT_PAT.y, m, 1);
-      if (torsoS > 2.5 && t > 1.82) return OUT_A1;                             // punho da jaqueta
-      return hem(c, t, sleeve);
-    }
-
-    // ----- Pernas e pés -----
-    if (vGroup.z > 0.5) {
+      if (t < 2.0 && t < sleeve) {
+        piece = 1;
+        if (t > sleeve - 0.05) shade = 0.8;
+        if (torsoS > 2.5 && t > 1.82) { piece = -1; direct = OUT_A1; outRough = 0.8; }  // punho da jaqueta
+      }
+    } else if (vGroup.z > 0.5) {
+      // ----- Pernas e pés -----
       float t = legT(p.y);
-      if (t > 1.97) return shoes(p, m, feetS);
-      if (feetS > 0.5 && feetS < 1.5 && t > 1.45) return shoes(p, m, feetS);   // cano da bota
-      float end = legsS < 0.5 ? 1.95 : legsS < 1.5 ? 0.85 : 0.38;
-      if (t >= end) return skin();
-      return hem(cloth(OUT_C2, OUT_A2, OUT_PAT.z, m, 2), t, end);
+      bool boot = feetS > 0.5 && feetS < 1.5 && t > 1.45;
+      if (t > 1.97 || boot) {
+        if (feetS > 2.5) {
+          // descalço: pele
+        } else if (feetS > 1.5) {                                        // chinelo
+          if (p.y < 0.055) { direct = OUT_C3; outRough = 0.6; }
+          else if (p.y < 0.14 && abs(P.x - uAnkle.x) < 0.035 && p.z > uAnkle.z + 0.08) direct = OUT_A3;
+        } else if (p.y < 0.065) {                                        // sola
+          direct = feetS > 0.5 ? OUT_C3 * 0.35 : OUT_A3; outRough = 0.6;
+        } else {
+          piece = 3;
+        }
+      } else {
+        float end = legsS < 0.5 ? 1.95 : legsS < 1.5 ? 0.85 : 0.38;
+        if (t < end) { piece = 2; if (t > end - 0.05) shade = 0.8; }
+      }
+    } else if (p.y < uWaist) {
+      // ----- Quadril (calça) e cinto -----
+      if (p.y > uWaist - 0.07) { direct = OUT_C2 * 0.4; outRough = 0.4; }
+      else piece = 2;
+    } else {
+      // ----- Tronco -----
+      float tank = torsoS > 0.5 && torsoS < 1.5 ? 1.0 : 0.0;
+      float collar = (p.z > 0.0 ? uNeck.y - 0.17 - tank * 0.12 : uNeck.y - 0.06) + 2.6 * P.x * P.x;
+      bool armhole = tank > 0.5 && P.x > 0.3 && p.y > uShoulder.y - 0.42;
+      if (p.y <= collar && !armhole) {
+        if (torsoS > 2.5 && p.z > 0.0 && P.x < 0.03) { direct = OUT_A1; outRough = 0.3; }  // zíper
+        else {
+          piece = 1;
+          printable = true;
+          if (p.y > collar - 0.05) shade = 0.82;
+          if (p.y < uWaist + 0.06) shade = 0.85;
+        }
+      }
     }
 
-    // ----- Tronco -----
-    if (p.y < uWaist) {
-      vec3 c = cloth(OUT_C2, OUT_A2, OUT_PAT.z, m, 2);
-      if (p.y > uWaist - 0.07) { outRough = 0.4; return OUT_C2 * 0.4; }        // cinto
-      return c;
+    vec3 col = direct;
+    if (piece >= 0) {
+      vec3 base = piece == 0 ? OUT_C0 : piece == 1 ? OUT_C1 : piece == 2 ? OUT_C2 : OUT_C3;
+      vec3 acc = piece == 0 ? OUT_A0 : piece == 1 ? OUT_A1 : piece == 2 ? OUT_A2 : OUT_A3;
+      float pat = piece == 0 ? OUT_PAT.x : piece == 1 ? OUT_PAT.y : piece == 2 ? OUT_PAT.z : OUT_PAT.w;
+      float k = patternMask(pat, m, piece);
+      col = k > 1.5 ? base * 0.55 : mix(base, acc, k);
+      col *= 0.94 + 0.06 * noise(m * 70.0);
+      outRough = piece == 3 && feetS > 0.5 ? 0.4 : 0.88;
     }
-    float tank = torsoS > 0.5 && torsoS < 1.5 ? 1.0 : 0.0;
-    float collar = (p.z > 0.0 ? uNeck.y - 0.17 - tank * 0.12 : uNeck.y - 0.06) + 2.6 * P.x * P.x;
-    if (p.y > collar) return skin();                                           // gola
-    if (tank > 0.5 && P.x > 0.3 && p.y > uShoulder.y - 0.42) return skin();    // cava da regata
-    if (torsoS > 2.5 && p.z > 0.0 && P.x < 0.03) { outRough = 0.3; return OUT_A1; } // zíper
-    vec3 c = cloth(OUT_C1, OUT_A1, OUT_PAT.y, m, 1);
-    if (p.y > collar - 0.05) c *= 0.82;                                        // acabamento da gola
-    if (p.y < uWaist + 0.06) c *= 0.85;                                        // barra
+    col *= shade;
     #ifdef HAS_PRINT
-    if (uPrintOn > 0.5 && p.z > 0.0) {
-      vec2 uv = vec2(p.x / 0.6 + 0.5, (p.y - uChestY) / 0.6 + 0.5);
+    if (printable && uPrintOn > 0.5 && p.z > 0.0) {
+      vec2 uv = vec2(p.x / 0.85 + 0.5, (p.y - uChestY) / 0.85 + 0.5);
       if (uv.x > 0.0 && uv.x < 1.0 && uv.y > 0.0 && uv.y < 1.0) {
-        vec4 t = texture2D(uPrint, uv);
-        c = mix(c, t.rgb, t.a);
+        vec4 tp = texture2D(uPrint, uv);
+        col = mix(col, tp.rgb, tp.a);
       }
     }
     #endif
-    return c;
+    return col;
   }
 `;
 

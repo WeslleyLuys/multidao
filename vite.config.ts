@@ -5,7 +5,7 @@ export default defineConfig({
   build: {
     outDir: '../dist',
     emptyOutDir: true,
-    target: 'es2022', // top-level await em main.ts
+    target: ['es2022', 'safari15', 'chrome96', 'firefox100'], // top-level await em main.ts; iOS 15+
     chunkSizeWarningLimit: 900,
   },
   server: {

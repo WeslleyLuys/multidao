@@ -56,6 +56,31 @@ Se trocar o modelo, mantenha os nomes dos ossos (`upperarm.L`, `lowerleg.R`, `he
 
 O servidor cria `BOTS_PER_TEAM` bots por lado (`shared/config.ts`). Eles andam pela zona do seu lado, param, olham em volta e fazem gestos. Não falam e não entram na contagem de pessoas online. Além deles há uma multidão de fundo, estática e instanciada, só no cliente.
 
+## Eventos (FPS)
+
+O botão "🎯 Eventos" (ou Esc → Eventos) abre a escolha de tamanho: 1x1, 2x2, 4x4, 8x8 ou 12x12, Esquerda contra Direita. A partida começa quando os dois lados enchem; com "Jogar agora com bots", ou depois de 20 s na fila, as vagas são completadas com bots.
+
+- **Arena** (`shared/arena.ts`): terreno abandonado gerado por semente e espelhado (justo para os dois lados). O tamanho acompanha o número de jogadores.
+- **Armas** (`shared/weapons.ts`): soco, pistola, fuzil, shotgun e canhão. Todos nascem só com o soco; as armas saem dos baús, que voltam a fechar depois de 25 s.
+- **Servidor** (`server/match.ts`): fila, partida de 3 minutos, tiros, headshot, projétil com dano em área, proteção de 2 s ao renascer, pontuação e bots.
+- **Cliente** (`client/src/match/`): primeira pessoa, HUD, efeitos e sons sintetizados.
+- **Controles:** WASD, mouse, clique (atirar), E (baú), R (recarregar), 1–5 ou roda (armas), Tab (placar), Esc (pausa).
+
+
+## Publicação (VPS de testes)
+
+O jogo roda em `http://vps67071.publiccloud.com.br:8090`. A VPS é compartilhada com sites em produção (Apache) e tem pouca memória, então:
+
+- **Compilação:** tudo é compilado localmente; a VPS recebe só `dist/` (cliente) e `dist-server/index.mjs` (servidor em um arquivo).
+- **Instalação isolada:** Node fica em `/opt/node22`, o app em `/opt/multidao`, e o serviço systemd `multidao` roda com limite de memória e CPU.
+
+```bash
+deploy/setup-vps.sh   # uma vez, na VPS (via: ssh root@vps 'bash -s' < deploy/setup-vps.sh)
+npm run deploy        # compila e publica
+```
+
+Logs: `ssh root@vps67071.publiccloud.com.br journalctl -u multidao -f`
+
 ## Próximos passos sugeridos
 
 - Contas (cadastro/login) e perfil persistente

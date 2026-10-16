@@ -1,0 +1,25 @@
+[Unit]
+Description=Multidão (servidor do jogo)
+After=network.target
+
+[Service]
+Type=simple
+User=multidao
+WorkingDirectory=/opt/multidao
+Environment=NODE_ENV=production
+Environment=PORT=8090
+ExecStart=/opt/node22/bin/node /opt/multidao/dist-server/index.mjs
+# Certificado Let's Encrypt entregue ao serviço sem expor /etc/letsencrypt ao usuário multidao.
+LoadCredential=cert:/etc/letsencrypt/live/vps67071.publiccloud.com.br/fullchain.pem
+LoadCredential=key:/etc/letsencrypt/live/vps67071.publiccloud.com.br/privkey.pem
+Restart=always
+RestartSec=3
+# A VPS é compartilhada com sites em produção: limita memória e CPU do jogo.
+MemoryMax=200M
+CPUQuota=60%
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

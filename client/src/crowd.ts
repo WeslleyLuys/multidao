@@ -29,8 +29,7 @@ export class AmbientCrowd {
   private s = new THREE.Vector3();
   private up = new THREE.Vector3(0, 1, 0);
 
-  constructor(scene: THREE.Scene, rand: () => number) {
-    const perTeam = 200;
+  constructor(scene: THREE.Scene, rand: () => number, perTeam = 200) {
 
     // Duas poses: braços ao lado do corpo e um braço erguido (punho para cima).
     const poses = [

@@ -161,6 +161,47 @@ export function facadeTexture(style: FacadeStyle, seed: number) {
   return toTexture(c);
 }
 
+/**
+ * Máscara de janelas acesas (para a noite), alinhada com facadeTexture do mesmo estilo.
+ * Preto = apagado; amarelo quente/branco frio = luz acesa.
+ */
+export function windowLightsTexture(style: FacadeStyle, seed: number) {
+  const rand = rng(seed * 31 + 7);
+  const [c, ctx] = canvas(512, 512);
+  ctx.fillStyle = '#000000';
+  ctx.fillRect(0, 0, 512, 512);
+  const color = () => (rand() < 0.75 ? `hsl(${38 + rand() * 12}, 90%, ${62 + rand() * 18}%)` : `hsl(205, 60%, ${78 + rand() * 12}%)`);
+  if (style === 'office') {
+    for (let f = 0; f < 4; f++) {
+      for (let x = 0; x < 512; x += 64) {
+        if (rand() < 0.45) {
+          ctx.fillStyle = color();
+          ctx.fillRect(x + 3, f * 128 + 30, 61, 80);
+        }
+      }
+    }
+  } else if (style === 'glass') {
+    for (let x = 0; x < 512; x += 64) {
+      for (let y = 0; y < 512; y += 64) {
+        if (rand() < 0.35) {
+          ctx.fillStyle = color();
+          ctx.fillRect(x + 4, y + 5, 60, 59);
+        }
+      }
+    }
+  } else {
+    for (let f = 0; f < 4; f++) {
+      for (let col = 0; col < 4; col++) {
+        if (rand() < 0.4) {
+          ctx.fillStyle = color();
+          ctx.fillRect(col * 128 + 28, f * 128 + 22, 72, 84);
+        }
+      }
+    }
+  }
+  return toTexture(c);
+}
+
 const SHOPS = ['PADARIA', 'FARMÁCIA', 'CAFÉ', 'LIVRARIA', 'LANCHONETE', 'ÓTICA', 'PAPELARIA', 'SORVETERIA', 'FLORICULTURA', 'BAZAR'];
 const SHOP_COLORS = ['#c0392b', '#1f6f8b', '#2e8b57', '#8e44ad', '#d35400', '#2c3e50', '#b8860b', '#16a085'];
 

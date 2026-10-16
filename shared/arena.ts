@@ -32,7 +32,7 @@ export interface Arena {
 
 export const MATCH_SIZES = [1, 2, 4, 8, 12] as const;
 export type MatchSize = (typeof MATCH_SIZES)[number];
-export const ARENA_HALF: Record<MatchSize, number> = { 1: 18, 2: 24, 4: 34, 8: 48, 12: 60 };
+export const ARENA_HALF: Record<MatchSize, number> = { 1: 26, 2: 34, 4: 48, 8: 68, 12: 86 };
 
 // Dimensões base (largura x profundidade x altura) de cada tipo, antes da rotação.
 const KINDS: Record<ObstacleKind, { w: number; d: number; h: number; weight: number }> = {
@@ -76,7 +76,8 @@ export function buildArena(size: MatchSize, seed: number): Arena {
   };
 
   // Gera só o lado x < 0 e espelha.
-  const target = Math.round((half * half) / 30);
+  // Densidade fixa por área, com teto para os mapas grandes não pesarem.
+  const target = Math.min(150, Math.round((half * half) / 34));
   for (let tries = 0; tries < target * 30 && obstacles.length < target * 2; tries++) {
     const kind = pickKind();
     const k = KINDS[kind];
@@ -120,37 +121,163 @@ export function buildArena(size: MatchSize, seed: number): Arena {
   return { half, obstacles, chests, spawns };
 }
 
-// ---------- Física ----------
-export interface Body {
+// ---------- Física do jogador ----------
+// Movimento com aceleração/inércia, pulo e possibilidade de subir em obstáculos.
+// A mesma função roda no servidor (autoridade) e no cliente (predição).
+export interface Mover {
   x: number;
   z: number;
+  y: number; // altura dos pés
+  vx: number;
+  vz: number;
+  vy: number;
+  grounded: boolean;
 }
 
-export function arenaStep(b: Body, dx: number, dz: number, run: boolean, dt: number, arena: Arena): boolean {
-  const len = Math.hypot(dx, dz);
-  if (len < 0.01) return false;
-  const speed = run ? RUN_SPEED : WALK_SPEED;
+export interface MoveInput {
+  dx: number;
+  dz: number;
+  run: boolean;
+  jump: boolean;
+}
+
+export const GRAVITY = 22;
+export const JUMP_SPEED = 7.2;
+export const STEP_HEIGHT = 0.5; // degraus que se sobe andando (paletes baixos, pneus)
+const ACCEL_GROUND = 14;
+const ACCEL_AIR = 3;
+
+export function newMover(x: number, z: number): Mover {
+  return { x, z, y: 0, vx: 0, vz: 0, vy: 0, grounded: true };
+}
+
+/** Avança a física; retorna 0 parado, 1 andando, 2 correndo. */
+export function arenaMove(m: Mover, inp: MoveInput, dt: number, arena: Arena): number {
+  const len = Math.hypot(inp.dx, inp.dz);
+  const speed = inp.run ? RUN_SPEED : WALK_SPEED;
+  const tx = len > 0.01 ? (inp.dx / Math.max(1, len)) * speed : 0;
+  const tz = len > 0.01 ? (inp.dz / Math.max(1, len)) * speed : 0;
+  const k = 1 - Math.exp(-(m.grounded ? ACCEL_GROUND : ACCEL_AIR) * dt);
+  m.vx += (tx - m.vx) * k;
+  m.vz += (tz - m.vz) * k;
+
+  if (inp.jump && m.grounded) {
+    m.vy = JUMP_SPEED;
+    m.grounded = false;
+  }
+  m.vy -= GRAVITY * dt;
+
   // Move eixo por eixo para "deslizar" nos obstáculos.
-  b.x += (dx / len) * speed * dt;
-  collide(b, arena, 'x');
-  b.z += (dz / len) * speed * dt;
-  collide(b, arena, 'z');
-  return true;
+  m.x += m.vx * dt;
+  collide(m, arena, 'x');
+  m.z += m.vz * dt;
+  collide(m, arena, 'z');
+  m.y += m.vy * dt;
+
+  const ground = groundHeight(m, arena);
+  if (m.y <= ground) {
+    m.y = ground;
+    m.vy = 0;
+    m.grounded = true;
+  } else if (m.grounded && m.vy <= 0 && m.y - ground < STEP_HEIGHT) {
+    m.y = ground; // desce degraus sem "voar"
+    m.vy = 0;
+  } else m.grounded = false;
+
+  const sp = Math.hypot(m.vx, m.vz);
+  return sp < 0.4 ? 0 : sp > (WALK_SPEED + RUN_SPEED) / 2 ? 2 : 1;
 }
 
-function collide(b: Body, arena: Arena, axis: 'x' | 'z') {
+/** Altura do chão sob o jogador (topo do obstáculo em que ele está, ou 0). */
+function groundHeight(m: Mover, arena: Arena) {
+  const r = BODY_RADIUS * 0.6;
+  let g = 0;
+  for (const o of arena.obstacles) {
+    if (Math.abs(m.x - o.x) < o.hx + r && Math.abs(m.z - o.z) < o.hz + r && o.h <= m.y + STEP_HEIGHT && o.h > g) g = o.h;
+  }
+  return g;
+}
+
+function collide(m: Mover, arena: Arena, axis: 'x' | 'z') {
   const r = BODY_RADIUS;
   const lim = arena.half - r;
-  b.x = Math.max(-lim, Math.min(lim, b.x));
-  b.z = Math.max(-lim, Math.min(lim, b.z));
+  m.x = Math.max(-lim, Math.min(lim, m.x));
+  m.z = Math.max(-lim, Math.min(lim, m.z));
   for (const o of arena.obstacles) {
-    const ox = o.hx + r - Math.abs(b.x - o.x);
-    const oz = o.hz + r - Math.abs(b.z - o.z);
+    if (m.y >= o.h - STEP_HEIGHT) continue; // dá para subir/está em cima
+    const ox = o.hx + r - Math.abs(m.x - o.x);
+    const oz = o.hz + r - Math.abs(m.z - o.z);
     if (ox > 0 && oz > 0) {
-      if (axis === 'x') b.x += Math.sign(b.x - o.x || 1) * ox;
-      else b.z += Math.sign(b.z - o.z || 1) * oz;
+      if (axis === 'x') {
+        m.x += Math.sign(m.x - o.x || 1) * ox;
+        m.vx = 0;
+      } else {
+        m.z += Math.sign(m.z - o.z || 1) * oz;
+        m.vz = 0;
+      }
     }
   }
+}
+
+// ---------- Projéteis (foguete e granada) ----------
+export interface Proj {
+  pos: Vec3;
+  vel: Vec3;
+}
+
+/**
+ * Avança um projétil. Com bounce = 0 (foguete) retorna true ao tocar algo.
+ * Com bounce > 0 (granada) quica em chão e obstáculos e nunca "acerta".
+ */
+export function projStep(p: Proj, dt: number, arena: Arena, gravity: number, bounce: number): boolean {
+  p.vel.y -= gravity * dt;
+  const prev = { ...p.pos };
+  const next = { x: p.pos.x + p.vel.x * dt, y: p.pos.y + p.vel.y * dt, z: p.pos.z + p.vel.z * dt };
+  if (next.y <= 0.06) {
+    if (!bounce) {
+      p.pos = { ...next, y: 0.06 };
+      return true;
+    }
+    next.y = 0.06;
+    p.vel.y = Math.abs(p.vel.y) * bounce;
+    p.vel.x *= 0.7;
+    p.vel.z *= 0.7;
+    if (Math.abs(p.vel.y) < 0.8) p.vel.y = 0;
+  }
+  const lim = arena.half - 0.2;
+  if (Math.abs(next.x) > lim || Math.abs(next.z) > lim) {
+    if (!bounce) {
+      p.pos = next;
+      return true;
+    }
+    if (Math.abs(next.x) > lim) p.vel.x = -p.vel.x * bounce;
+    if (Math.abs(next.z) > lim) p.vel.z = -p.vel.z * bounce;
+    next.x = Math.max(-lim, Math.min(lim, next.x));
+    next.z = Math.max(-lim, Math.min(lim, next.z));
+  }
+  for (const o of arena.obstacles) {
+    const inside = Math.abs(next.x - o.x) < o.hx && Math.abs(next.z - o.z) < o.hz && next.y < o.h;
+    if (!inside) continue;
+    if (!bounce) {
+      p.pos = next;
+      return true;
+    }
+    // Quica na face pela qual entrou.
+    if (prev.y >= o.h) {
+      next.y = o.h + 0.02;
+      p.vel.y = Math.abs(p.vel.y) * bounce;
+      p.vel.x *= 0.7;
+      p.vel.z *= 0.7;
+    } else if (Math.abs(prev.x - o.x) >= o.hx) {
+      next.x = prev.x;
+      p.vel.x = -p.vel.x * bounce;
+    } else {
+      next.z = prev.z;
+      p.vel.z = -p.vel.z * bounce;
+    }
+  }
+  p.pos = next;
+  return false;
 }
 
 // ---------- Raios (tiros e linha de visão) ----------
@@ -190,7 +317,7 @@ export function rayBox(o: Vec3, d: Vec3, minX: number, minY: number, minZ: numbe
 }
 
 /** Raio contra o cilindro de um jogador. Retorna a distância e a altura do acerto, ou null. */
-export function rayBody(o: Vec3, d: Vec3, bx: number, bz: number): { t: number; y: number } | null {
+export function rayBody(o: Vec3, d: Vec3, bx: number, bz: number, by = 0): { t: number; y: number } | null {
   const fx = o.x - bx;
   const fz = o.z - bz;
   const a = d.x * d.x + d.z * d.z;
@@ -201,7 +328,7 @@ export function rayBody(o: Vec3, d: Vec3, bx: number, bz: number): { t: number; 
   if (disc < 0) return null;
   const t = (-b - Math.sqrt(disc)) / (2 * a);
   if (t < 0) return null;
-  const y = o.y + d.y * t;
+  const y = o.y + d.y * t - by; // altura relativa aos pés
   if (y < 0 || y > BODY_HEIGHT) return null;
   return { t, y };
 }

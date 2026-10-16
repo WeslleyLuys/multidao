@@ -7,6 +7,33 @@
   <title>Multidão · a manifestação online</title>
   <meta name="description" content="Entre na avenida pelo navegador: escolha seu lado e seu visual, converse, leve bandeira e cartaz.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <script>
+    // Verificação antes do jogo carregar: mostra o problema em vez de uma tela vazia.
+    (function () {
+      function show(msg) {
+        var el = document.getElementById('boot-error');
+        if (!el) {
+          el = document.createElement('div');
+          el.id = 'boot-error';
+          el.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:99;padding:14px;border-radius:12px;background:#3a1215;color:#ffd7d7;font:14px/1.4 system-ui,sans-serif;white-space:pre-wrap';
+          (document.body || document.documentElement).appendChild(el);
+        }
+        el.textContent += msg + '\n';
+      }
+      window.__bootError = show;
+      window.addEventListener('error', function (e) { if (!window.__gameStarted) show('Erro ao carregar: ' + (e.message || e.filename || 'desconhecido')); });
+      var gl = null;
+      try { gl = document.createElement('canvas').getContext('webgl2'); } catch (e) {}
+      if (!gl) {
+        document.addEventListener('DOMContentLoaded', function () {
+          show('Seu navegador não tem WebGL 2, necessário para o 3D. Atualize o navegador (iOS 15+ / Chrome recente) ou ative a aceleração de hardware.');
+        });
+      }
+      setTimeout(function () {
+        if (!window.__gameStarted) show('O jogo não terminou de carregar em 25 s. Navegador: ' + navigator.userAgent);
+      }, 25000);
+    })();
+  </script>
 </head>
 <body>
   <canvas id="game"></canvas>
@@ -90,10 +117,49 @@
         <h2 id="menu-title">Menu</h2>
       </header>
       <button id="menu-resume" class="btn-primary">Continuar</button>
+      <button id="menu-events" class="btn-secondary">🎯 Eventos (FPS)</button>
       <button id="menu-look" class="btn-secondary">Personalizar visual</button>
+      <button id="menu-view" class="btn-secondary">Câmera</button>
       <button id="menu-quality" class="btn-secondary">Gráficos</button>
       <button id="menu-exit" class="btn-secondary danger">Sair para o menu principal</button>
       <p class="menu-hint">Esc para voltar ao jogo</p>
+    </div>
+  </section>
+
+  <!-- Eventos -->
+  <section id="events" class="overlay" hidden>
+    <div class="menu-card events-card" role="dialog" aria-labelledby="events-title">
+      <header class="brand">
+        <span class="brand-logo small" data-logo></span>
+        <h2 id="events-title">Eventos</h2>
+      </header>
+      <p class="menu-hint">FPS em primeira pessoa: armas, colete e granadas nos baús.</p>
+      <div class="field">
+        <span>Tamanho (seu lado contra o outro)</span>
+        <div id="event-sizes" class="chips"></div>
+      </div>
+      <div class="field">
+        <span>Rounds</span>
+        <div id="event-rounds" class="chips"></div>
+      </div>
+      <p id="event-hint" class="menu-hint"></p>
+      <div class="events-actions">
+        <button id="event-queue" class="btn-secondary">Procurar jogadores</button>
+        <button id="event-bots" class="btn-primary">Jogar agora com bots</button>
+      </div>
+      <button id="event-close" class="btn-secondary">Voltar</button>
+    </div>
+  </section>
+
+  <!-- Quem está online -->
+  <section id="roster" class="overlay" hidden>
+    <div class="menu-card roster-card" role="dialog" aria-labelledby="roster-title">
+      <header class="brand">
+        <span class="brand-logo small" data-logo></span>
+        <h2 id="roster-title">Online agora</h2>
+      </header>
+      <div id="roster-list" class="roster-list"></div>
+      <button id="roster-close" class="btn-secondary">Fechar</button>
     </div>
   </section>
 
@@ -104,7 +170,25 @@
       <span class="brand-logo small" data-logo></span>
       <strong data-game-name></strong>
       <span id="hud-online" class="pill"></span>
+      <span id="hud-clock" class="pill"></span>
       <span id="hud-status" class="pill warn" hidden>Reconectando…</span>
+      <button id="hud-events" class="hud-btn" type="button">🎯 Eventos</button>
+    </div>
+
+    <div id="street-actions" class="street-actions">
+      <button type="button" data-act="hit" title="Bater (F)">👊</button>
+      <button type="button" data-act="push" title="Empurrar (G)">🫸</button>
+      <button type="button" data-act="social" title="Interagir (T)">💞</button>
+    </div>
+    <div id="fp-cross" class="fp-cross" hidden></div>
+    <div id="social-menu" class="popup" hidden></div>
+    <div id="social-ask" class="popup" hidden></div>
+    <div id="jail-banner" class="jail-banner" hidden></div>
+
+    <div id="queue-bar" class="queue-bar" hidden>
+      <span id="queue-text"></span>
+      <button id="queue-bots" type="button">Começar com bots</button>
+      <button id="queue-cancel" type="button">Cancelar</button>
     </div>
 
     <div class="chat">
@@ -114,7 +198,7 @@
 
     <div id="emotes" class="emotes"></div>
 
-    <p class="help">WASD/setas para andar · Shift corre · arraste para girar a câmera · roda do mouse para zoom · 1–4 emotes · Esc menu</p>
+    <p class="help">WASD/setas para andar · Shift corre · arraste para girar a câmera · roda do mouse para zoom · 1–0 ações · Espaço pula · C agacha · clique bate · botão direito/G empurra · T interage · V 1ª/3ª pessoa · Esc menu</p>
 
     <div id="joystick" class="joystick"><div class="knob"></div></div>
   </section>

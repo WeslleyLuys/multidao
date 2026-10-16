@@ -12,7 +12,9 @@
     "dev:client": "vite",
     "build": "tsc --noEmit && vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --target=node20 --external:ws --outfile=dist-server/index.mjs",
+    "deploy": "bash deploy/deploy.sh"
   },
   "dependencies": {
     "three": "^0.186.1",

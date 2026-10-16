@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { GAME, TEAMS, TRUCKS, WORLD } from '../../shared/config';
+import { GAME, JAIL, POLICE_VANS, TEAMS, TRUCKS, WORLD, type Rect } from '../../shared/config';
 import { mat } from './avatar';
 import { AmbientCrowd } from './crowd';
 import {
-  FACADE_CELL, asphaltTexture, facadeTexture, ledPanelTexture, paverTexture, rng, storefrontTexture,
+  FACADE_CELL, asphaltTexture, facadeTexture, ledPanelTexture, paverTexture, rng, storefrontTexture, windowLightsTexture,
   type FacadeStyle,
 } from './textures';
 
@@ -17,9 +17,11 @@ const EXTENT = L + 140; // a cidade continua além das barreiras
 export interface World {
   update(time: number, dt: number): void;
   setDetail(high: boolean): void;
+  /** 0 = dia, 1 = noite: acende janelas, vitrines e postes. */
+  setNight(n: number): void;
 }
 
-export function buildWorld(scene: THREE.Scene): World {
+export function buildWorld(scene: THREE.Scene, lite = false): World {
   const rand = rng(1337);
 
   // ---------- Chão ----------
@@ -56,11 +58,13 @@ export function buildWorld(scene: THREE.Scene): World {
   // ---------- Prédios ----------
   const styles: FacadeStyle[] = ['concrete', 'brick', 'office', 'glass'];
   const facades = styles.map((s, i) => facadeTexture(s, 100 + i));
-  const facadeMats = styles.map((s, i) =>
-    s === 'glass'
-      ? new THREE.MeshStandardMaterial({ map: facades[i], metalness: 0.85, roughness: 0.12, envMapIntensity: 1.6 })
-      : new THREE.MeshStandardMaterial({ map: facades[i], roughness: 0.85 }),
-  );
+  // emissiveMap = janelas acesas; a intensidade sobe à noite (setNight).
+  const facadeMats = styles.map((s, i) => {
+    const lights = { emissive: new THREE.Color('#ffffff'), emissiveMap: windowLightsTexture(s, 100 + i), emissiveIntensity: 0 };
+    return s === 'glass'
+      ? new THREE.MeshStandardMaterial({ map: facades[i], metalness: 0.85, roughness: 0.12, envMapIntensity: 1.6, ...lights })
+      : new THREE.MeshStandardMaterial({ map: facades[i], roughness: 0.85, ...lights });
+  });
   const roofMat = mat('#7a7d80', 0.95);
   const shops = Array.from({ length: 8 }, (_, i) => storefrontTexture(500 + i));
   const shopMats = shops.map((s) => new THREE.MeshStandardMaterial({ map: s.map, roughness: 0.4, emissive: '#ffffff', emissiveMap: s.map, emissiveIntensity: 0.12 }));
@@ -81,7 +85,7 @@ export function buildWorld(scene: THREE.Scene): World {
 
   // ---------- Árvores e postes ----------
   addTrees(scene, rand);
-  addStreetLights(scene);
+  const streetLights = addStreetLights(scene);
 
   // Barreiras nas pontas da avenida
   const barrierGeo = new RoundedBoxGeometry(0.5, 1.05, 2, 2, 0.08);
@@ -95,7 +99,10 @@ export function buildWorld(scene: THREE.Scene): World {
   }
 
   const trucks = TRUCKS.map((t) => buildTruck(scene, t.x, t.z, TEAMS[t.team].color, TEAMS[t.team].accent));
-  const crowd = new AmbientCrowd(scene, rand);
+  const vans = POLICE_VANS.map((v) => buildPoliceVan(scene, v.x, v.z));
+  buildJailCell(scene, JAIL.cell, 'PRISÃO PREVENTIVA', false);
+  buildJailCell(scene, JAIL.outside, 'DETENÇÃO', true);
+  const crowd = new AmbientCrowd(scene, rand, lite ? 70 : 200); // celular: multidão de fundo menor
   const confetti = new Confetti(scene, rand);
 
   return {
@@ -103,9 +110,16 @@ export function buildWorld(scene: THREE.Scene): World {
       crowd.update(time);
       confetti.update(dt);
       for (const t of trucks) t.update(time);
+      for (const v of vans) v.update(time);
     },
     setDetail(high) {
       confetti.mesh.visible = high;
+    },
+    setNight(n) {
+      // A textura de janelas repete por fachada, então o brilho vem por material (barato).
+      for (const m of facadeMats) m.emissiveIntensity = n * 1.3;
+      for (const m of shopMats) m.emissiveIntensity = 0.12 + n * 0.9;
+      streetLights.setNight(n);
     },
   };
 }
@@ -296,6 +310,177 @@ function addStreetLights(scene: THREE.Scene) {
   poles.count = arms.count = lamps.count = n;
   poles.castShadow = arms.castShadow = lamps.castShadow = true;
   scene.add(poles, arms, lamps);
+
+  // Círculos de luz no chão sob cada poste (luz "falsa", sem custo de iluminação real).
+  const poolTex = (() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 128;
+    const ctx = c.getContext('2d')!;
+    const g = ctx.createRadialGradient(64, 64, 0, 64, 64, 64);
+    g.addColorStop(0, 'rgba(255,214,140,1)');
+    g.addColorStop(0.45, 'rgba(255,200,120,0.45)');
+    g.addColorStop(1, 'rgba(255,190,110,0)');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, 128, 128);
+    return new THREE.CanvasTexture(c);
+  })();
+  const poolMat = new THREE.MeshBasicMaterial({ map: poolTex, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+  const pools = new THREE.InstancedMesh(new THREE.PlaneGeometry(13, 13).rotateX(-Math.PI / 2), poolMat, n);
+  let k = 0;
+  for (let x = -EXTENT; x <= EXTENT && k < n; x += 30) {
+    for (const side of [-1, 1]) {
+      pools.setMatrixAt(k++, m.compose(new THREE.Vector3(x, 0.03, side * (ROAD - 1.2)), q, one));
+    }
+  }
+  pools.count = k;
+  pools.renderOrder = 1;
+  pools.visible = false;
+  scene.add(pools);
+
+  return {
+    setNight(night: number) {
+      lampMat.emissiveIntensity = 0.5 + night * 3.5;
+      poolMat.opacity = night * 0.55;
+      pools.visible = night > 0.05;
+    },
+  };
+}
+
+// Cela: gaiola de grades (preventiva, visível na calçada) ou sala de concreto isolada (fora do mapa).
+function buildJailCell(scene: THREE.Scene, r: Rect, title: string, closed: boolean) {
+  const g = new THREE.Group();
+  g.position.set(r.x, 0, r.z);
+  const metal = new THREE.MeshStandardMaterial({ color: '#2f3439', roughness: 0.4, metalness: 0.8 });
+  const w = r.halfX * 2;
+  const d = r.halfZ * 2;
+  const H = 3;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(w + 0.3, 0.2, d + 0.3), mat('#7d7d78', 0.95));
+  floor.position.y = 0.1;
+  const roof = new THREE.Mesh(new THREE.BoxGeometry(w + 0.3, 0.15, d + 0.3), metal);
+  roof.position.y = H;
+  g.add(floor, roof);
+  if (closed) {
+    // Sala de concreto com uma janela gradeada e luz fria
+    const concrete = mat('#8a8780', 0.95);
+    for (const [px, pz, sx, sz] of [[0, -r.halfZ, w, 0.25], [0, r.halfZ, w, 0.25], [-r.halfX, 0, 0.25, d], [r.halfX, 0, 0.25, d]] as const) {
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(sx, H, sz), concrete);
+      wall.position.set(px, H / 2, pz);
+      g.add(wall);
+    }
+    const lamp = new THREE.PointLight('#cfe3ff', 6, 9, 2);
+    lamp.position.set(0, H - 0.4, 0);
+    g.add(lamp);
+  } else {
+    // Gaiola: barras verticais nos quatro lados
+    const barGeo = new THREE.CylinderGeometry(0.025, 0.025, H, 6);
+    const bars = new THREE.InstancedMesh(barGeo, metal, Math.ceil((w + d) / 0.22) * 2 + 8);
+    const m = new THREE.Matrix4();
+    let n = 0;
+    for (let x = -r.halfX; x <= r.halfX + 0.01; x += 0.22) {
+      for (const z of [-r.halfZ, r.halfZ]) bars.setMatrixAt(n++, m.makeTranslation(x, H / 2, z));
+    }
+    for (let z = -r.halfZ + 0.22; z < r.halfZ; z += 0.22) {
+      for (const x of [-r.halfX, r.halfX]) bars.setMatrixAt(n++, m.makeTranslation(x, H / 2, z));
+    }
+    bars.count = n;
+    bars.castShadow = true;
+    g.add(bars);
+    for (const y of [0.3, H - 0.1]) {
+      const rail = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), metal);
+      rail.position.y = y;
+      rail.scale.set(1, 1, 1);
+      g.add(rail);
+    }
+  }
+  // Placa
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 96;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#1d3a8a';
+  ctx.fillRect(0, 0, 512, 96);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = '900 54px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(title, 256, 50, 490);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(w * 0.8, w * 0.15), new THREE.MeshStandardMaterial({ map: tex, emissive: '#ffffff', emissiveMap: tex, emissiveIntensity: 0.4 }));
+  // virada para a avenida (z menor) — a cela fica na calçada de z positivo
+  sign.position.set(0, H + 0.45, -r.halfZ - 0.02);
+  sign.rotation.y = Math.PI;
+  const back = sign.clone();
+  back.position.z = r.halfZ + 0.02;
+  back.rotation.y = 0;
+  g.add(sign, back);
+  g.traverse((o) => {
+    if (o instanceof THREE.Mesh) o.receiveShadow = true;
+  });
+  scene.add(g);
+}
+
+// Viatura da polícia parada (sólida, ver POLICE_VANS), com giroflex piscando.
+function buildPoliceVan(scene: THREE.Scene, x: number, z: number) {
+  const g = new THREE.Group();
+  g.position.set(x, 0.16, z);
+  const white = new THREE.MeshStandardMaterial({ color: '#f1f3f5', roughness: 0.35, metalness: 0.2 });
+  const blue = new THREE.MeshStandardMaterial({ color: '#1d3a8a', roughness: 0.4, metalness: 0.2 });
+  const glass = new THREE.MeshStandardMaterial({ color: '#16222d', roughness: 0.05, metalness: 0.9 });
+  const body = new THREE.Mesh(new RoundedBoxGeometry(5.2, 1.4, 2.2, 3, 0.18), white);
+  body.position.y = 1.05;
+  const cabin = new THREE.Mesh(new RoundedBoxGeometry(3.4, 0.8, 2.1, 3, 0.2), white);
+  cabin.position.set(-0.6, 2.1, 0);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(5.22, 0.28, 2.22), blue);
+  stripe.position.y = 1.05;
+  const windows = new THREE.Mesh(new THREE.BoxGeometry(3.3, 0.5, 2.15), glass);
+  windows.position.set(-0.6, 2.12, 0);
+  g.add(body, cabin, stripe, windows);
+  // texto "POLÍCIA" nas laterais
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 96;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = '#1d3a8a';
+  ctx.font = '900 70px system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('POLÍCIA', 256, 50);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  for (const side of [-1, 1]) {
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 0.48), new THREE.MeshStandardMaterial({ map: tex, transparent: true }));
+    label.position.set(0.4, 1.5, side * 1.115);
+    if (side < 0) label.rotation.y = Math.PI;
+    g.add(label);
+  }
+  const wheelGeo = new THREE.CylinderGeometry(0.42, 0.42, 0.3, 16).rotateX(Math.PI / 2);
+  for (const wx of [-1.7, 1.7]) {
+    for (const side of [-1, 1]) {
+      const w = new THREE.Mesh(wheelGeo, mat('#111317', 0.85));
+      w.position.set(wx, 0.27, side * 1.0);
+      g.add(w);
+    }
+  }
+  // Giroflex
+  const red = new THREE.MeshStandardMaterial({ color: '#ff2a2a', emissive: '#ff0000', emissiveIntensity: 0 });
+  const blueL = new THREE.MeshStandardMaterial({ color: '#2a5bff', emissive: '#0040ff', emissiveIntensity: 0 });
+  const lightL = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.18, 0.4, 2, 0.06), red);
+  lightL.position.set(-0.4, 2.6, -0.35);
+  const lightR = new THREE.Mesh(new RoundedBoxGeometry(0.5, 0.18, 0.4, 2, 0.06), blueL);
+  lightR.position.set(-0.4, 2.6, 0.35);
+  g.add(lightL, lightR);
+  g.traverse((o) => {
+    if (o instanceof THREE.Mesh) o.castShadow = o.receiveShadow = true;
+  });
+  scene.add(g);
+  return {
+    update(time: number) {
+      const k = Math.floor(time * 4) % 2;
+      red.emissiveIntensity = k ? 3 : 0.2;
+      blueL.emissiveIntensity = k ? 0.2 : 3;
+    },
+  };
 }
 
 function buildTruck(scene: THREE.Scene, x: number, z: number, color: string, accent: string) {
