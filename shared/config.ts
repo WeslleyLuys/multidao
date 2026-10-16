@@ -58,15 +58,15 @@ export const AGGRESSION = {
   intervalMs: 700,
   push: 1.6, // distância do empurrão (m)
   knockHits: 3, // golpes em 10 s para cair
-  knockMs: 4000,
-  policeSight: 18, // policial vê até essa distância (olhando para o lado)
-  policeHear: 7, // e percebe tudo perto, mesmo de costas
+  knockMs: 5000, // desmaiado no chão
+  policeSight: 24, // policial vê até essa distância (olhando para o lado)
+  policeHear: 10, // e percebe tudo perto, mesmo de costas
 };
 
 // Interações em dupla (tecla T)
-export const SOCIALS = ['hug', 'kiss', 'hand'] as const;
+export const SOCIALS = ['hug', 'kiss', 'hand', 'argue'] as const;
 export type Social = (typeof SOCIALS)[number];
-export const SOCIAL_LABEL: Record<Social, string> = { hug: '🤗 Abraçar', kiss: '💋 Beijar', hand: '🤝 Dar as mãos' };
+export const SOCIAL_LABEL: Record<Social, string> = { hug: '🤗 Abraçar', kiss: '💋 Beijar', hand: '🤝 Dar as mãos', argue: '😠 Discutir' };
 
 // Tudo que é sólido na avenida (usado pela física no servidor e no cliente).
 export const SOLIDS = [

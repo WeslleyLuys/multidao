@@ -35,6 +35,7 @@ interface Player extends PlayerInfo {
   // Avenida: agressão, prisão e interações
   jail?: { where: 'cell' | 'outside'; until: number };
   knockUntil?: number;
+  slide?: { vx: number; vz: number; until: number };
   hits?: number[];
   lastAttack?: number;
   social?: { with: number; kind: Social };
@@ -248,7 +249,7 @@ function handle(conn: Conn, msg: ClientMsg) {
     case 'attack': {
       if (!p || p.jail || (p.knockUntil ?? 0) > now || now - (p.lastAttack ?? 0) < AGGRESSION.intervalMs) return;
       p.lastAttack = now;
-      attack(p, msg.kind === 'push' ? 'push' : 'hit', now, conn);
+      attack(p, msg.kind === 'push' ? 'push' : 'hit', now, conn, !!msg.ambient);
       break;
     }
 
@@ -258,6 +259,13 @@ function handle(conn: Conn, msg: ClientMsg) {
       const target = players.get(Number(msg.target));
       if (!target || target === p || target.jail || Math.hypot(target.x - p.x, target.z - p.z) > 2.8) {
         return send(conn.ws, { t: 'notice', text: 'Chegue mais perto e fique de frente para a pessoa.' });
+      }
+      // Discutir não precisa de aceite (é bate-boca): começa na hora; quem não quiser, sai andando.
+      if (msg.kind === 'argue') {
+        if (target.role === 'police') startSocial(target, p, 'argue', now);
+        else startSocial(p, target, 'argue', now);
+        if (target.ws) send(target.ws, { t: 'notice', text: `😠 ${p.name} começou uma discussão com você. Ande para sair.` });
+        return;
       }
       if (target.bot) {
         // Bots e policiais aceitam quase sempre. O policial fica no posto: quem se posiciona é você.
@@ -429,10 +437,12 @@ function jailRect(p: Player) {
   return p.jail ? JAIL[p.jail.where] : undefined;
 }
 
-function attack(p: Player, kind: 'hit' | 'push', now: number, conn: Conn) {
+function attack(p: Player, kind: 'hit' | 'push', now: number, conn: Conn, ambient = false) {
   const target = facingTarget(p, AGGRESSION.range);
   if (!target) {
-    broadcast({ t: 'attack', id: p.id, target: 0, kind, knocked: false }); // golpe no ar
+    broadcast({ t: 'attack', id: p.id, target: 0, kind, knocked: false }); // golpe no ar (ou na multidão de fundo)
+    // Acertou alguém da multidão de fundo (detectado no cliente): também é agressão para a polícia.
+    if (ambient && policeSees(p)) arrest(p, 'cell', kind === 'push' ? 'empurrou uma pessoa' : 'agrediu uma pessoa', now, conn);
     return;
   }
   endSocial(p);
@@ -440,11 +450,10 @@ function attack(p: Player, kind: 'hit' | 'push', now: number, conn: Conn) {
   const dx = target.x - p.x;
   const dz = target.z - p.z;
   const d = Math.hypot(dx, dz) || 1;
-  // Policial não sai do lugar (nem da barreira); os outros são deslocados.
-  const dist = target.role === 'police' ? 0 : kind === 'push' ? AGGRESSION.push : 0.45;
-  target.x += (dx / d) * dist;
-  target.z += (dz / d) * dist;
-  resolve(target, jailRect(target));
+  // Quem apanha desliza para trás (policial não sai do lugar); quem bate dá um passo à frente.
+  const dist = target.role === 'police' ? 0 : kind === 'push' ? AGGRESSION.push : 0.5;
+  startSlide(target, (dx / d) * dist, (dz / d) * dist, kind === 'push' ? 320 : 200, now);
+  startSlide(p, (dx / d) * 0.3, (dz / d) * 0.3, 150, now);
   let knocked = false;
   if (kind === 'hit') {
     target.hits = (target.hits ?? []).filter((t) => now - t < 10_000);
@@ -456,7 +465,6 @@ function attack(p: Player, kind: 'hit' | 'push', now: number, conn: Conn) {
       target.input = { dx: 0, dz: 0, run: false };
     }
   }
-  if (target.ws) send(target.ws, { t: 'moved', x: r2(target.x), z: r2(target.z) });
   broadcast({ t: 'attack', id: p.id, target: target.id, kind, knocked });
   if (target.brain) {
     // Bot leva um susto e fica parado um instante.
@@ -468,6 +476,14 @@ function attack(p: Player, kind: 'hit' | 'push', now: number, conn: Conn) {
   if (policeSees(p)) arrest(p, 'cell', kind === 'push' ? 'empurrou uma pessoa' : 'agrediu uma pessoa', now, conn);
 }
 
+/** Deslize suave (em vez de teletransporte): aplicado no servidor e repetido pelo cliente do próprio jogador. */
+function startSlide(p: Player, dx: number, dz: number, ms: number, now: number) {
+  if (!dx && !dz) return;
+  const s = ms / 1000;
+  p.slide = { vx: dx / s, vz: dz / s, until: now + ms };
+  if (p.ws) send(p.ws, { t: 'slide', vx: r2(dx / s), vz: r2(dz / s), ms });
+}
+
 /** Algum policial viu? Perto ele percebe sempre; mais longe, só se estiver olhando para o lado. */
 function policeSees(p: Player) {
   for (const o of players.values()) {
@@ -475,8 +491,10 @@ function policeSees(p: Player) {
     const dx = p.x - o.x;
     const dz = p.z - o.z;
     const d = Math.hypot(dx, dz);
-    if (d < AGGRESSION.policeHear) return true;
-    if (d < AGGRESSION.policeSight && Math.abs(angleDiff(Math.atan2(dx, dz), o.yaw)) < 1.1) return true;
+    if (d < AGGRESSION.policeHear || (d < AGGRESSION.policeSight && Math.abs(angleDiff(Math.atan2(dx, dz), o.yaw)) < 1.1)) {
+      o.yaw = Math.atan2(dx, dz); // o policial que viu se vira para quem agrediu
+      return true;
+    }
   }
   return false;
 }
@@ -521,11 +539,12 @@ function startSocial(a: Player, b: Player, kind: Social, now: number) {
   const fz = Math.cos(a.yaw);
   if (kind === 'hand') {
     // à direita de quem pediu, olhando para o mesmo lado
-    b.x = a.x - fz * 0.6;
-    b.z = a.z + fx * 0.6;
+    b.x = a.x - fz * 0.5;
+    b.z = a.z + fx * 0.5;
     b.yaw = a.yaw;
   } else {
-    const dist = kind === 'kiss' ? 0.42 : 0.5;
+    // Abraço/beijo: perto o bastante para os corpos se encostarem; discussão: cara a cara, a um passo.
+    const dist = kind === 'argue' ? 1.0 : kind === 'kiss' ? 0.33 : 0.32;
     b.x = a.x + fx * dist;
     b.z = a.z + fz * dist;
     b.yaw = a.yaw + Math.PI;
@@ -567,9 +586,10 @@ interface Patrol {
   state: 'walk' | 'stop';
   until: number;
   nextTurn: number;
+  solo?: boolean; // policial avulso: anda por toda a avenida, inclusive calçadas
 }
 
-const POLICE_PAIRS = 4;
+const POLICE_PAIRS = 6;
 // Farda: boné, manga longa e calça azul-marinho, coturno preto (índices de CLOTH_COLORS).
 const POLICE_LOOK = (skin: number) =>
   sanitizeLook({
@@ -611,6 +631,33 @@ function spawnPolice() {
       if (k) p.patrol = leader.patrol; // o parceiro compartilha a mesma patrulha
       players.set(p.id, p);
     }
+  }
+}
+
+/** Policiais avulsos andando pela avenida toda (calçadas incluídas), parando de vez em quando. */
+function spawnSoloPolice() {
+  for (let i = 0; i < 8; i++) {
+    const x = -160 + (320 / 8) * i + Math.random() * 20;
+    const z = (Math.random() * 2 - 1) * (WORLD.halfWidth - 2);
+    const dir: 1 | -1 = Math.random() < 0.5 ? 1 : -1;
+    const p: Player = {
+      id: nextId++,
+      name: 'Polícia',
+      team: 0,
+      look: POLICE_LOOK(Math.floor(Math.random() * 6)),
+      bot: true,
+      role: 'police',
+      x,
+      z,
+      yaw: dir > 0 ? Math.PI / 2 : -Math.PI / 2,
+      moving: false,
+      input: { dx: 0, dz: 0, run: false },
+      lastChat: 0,
+      lastEmote: 0,
+      lastLook: 0,
+    };
+    p.patrol = { leader: p, lane: z, dir, tx: x + dir * 30, state: 'walk', until: 0, nextTurn: 0, solo: true };
+    players.set(p.id, p);
   }
 }
 
@@ -670,7 +717,7 @@ function thinkPolice(p: Player, now: number) {
           pt.dir = pt.dir > 0 ? -1 : 1;
           nx = p.x + pt.dir * (40 + Math.random() * 40);
         }
-        pt.lane = clamp(pt.lane + (Math.random() - 0.5) * 6, -WORLD.halfWidth + 3, WORLD.halfWidth - 3);
+        pt.lane = pt.solo ? (Math.random() * 2 - 1) * (WORLD.halfWidth - 2) : clamp(pt.lane + (Math.random() - 0.5) * 6, -WORLD.halfWidth + 3, WORLD.halfWidth - 3);
         Object.assign(pt, { tx: nx, state: 'walk' });
       }
     }
@@ -736,6 +783,14 @@ setInterval(() => {
     const dx = p.brain && len > 0 ? p.input.dx / len : p.input.dx;
     const dz = p.brain && len > 0 ? p.input.dz / len : p.input.dz;
     p.moving = step(p, dx, dz, p.input.run, dt, jailRect(p));
+    if (p.slide) {
+      if (now >= p.slide.until) p.slide = undefined;
+      else {
+        p.x += p.slide.vx * dt;
+        p.z += p.slide.vz * dt;
+        resolve(p, jailRect(p));
+      }
+    }
     if (p.moving) {
       p.yaw = Math.atan2(dx, dz);
       if (p.social) endSocial(p); // andou: a interação acaba para os dois
@@ -768,6 +823,7 @@ setInterval(() => {
 spawnBots();
 spawnPolice();
 spawnPoliceLine();
+spawnSoloPolice();
 front.listen(PORT, () =>
   console.log(`[multidao] servidor na porta ${PORT} (${https ? 'http + https' : 'só http'}, ws em /ws) · ${BOTS_PER_TEAM * 2} bots`),
 );

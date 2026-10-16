@@ -174,11 +174,27 @@ const BONES = [
 const ZERO: Rot = [0, 0, 0];
 // Ações em que a mão direita continua livre para a bandeira/cartaz.
 // Animações extras além das ações da barra: agressão, reação e interações em dupla.
-export type AnimName = Emote | 'hit' | 'hitItem' | 'shove' | 'stagger' | 'knockdown' | 'hug' | 'kiss' | 'hand';
+export type AnimName = Emote | 'hit' | 'hitItem' | 'shove' | 'stagger' | 'knockdown' | 'hug' | 'kiss' | 'hand' | 'argue';
+
+// Frases da discussão (balões de fala).
+const ARGUE_LINES = [
+  'Isso é mentira!', 'Fake news!', 'Vai estudar!', 'Tá errado!', 'Me respeita!', 'Absurdo!',
+  'Pesquisa aí!', 'Que isso, rapaz?!', 'Não concordo!', 'Olha o que você tá falando!', 'Lê a notícia inteira!', 'Isso não é verdade!',
+];
 // Ações em que a mão direita continua livre para a bandeira/cartaz.
 const FREE_HAND = new Set<AnimName>(['jump', 'dance', 'wave', 'crouch', 'hitItem', 'stagger', 'shove']);
 // Ações curtas que não são canceladas por andar.
 const ONE_SHOT = new Set<AnimName>(['jump', 'hit', 'hitItem', 'shove', 'stagger']);
+// Ações que continuam enquanto anda (braços fazem a ação, pernas caminham).
+const WALKABLE = new Set<AnimName>(['drink', 'smoke', 'pee']);
+
+type V3 = [number, number, number];
+interface IKTarget {
+  p: V3; // onde a mão deve ficar
+  pole: V3; // para onde o cotovelo aponta
+}
+const lerp3 = (a: V3, b: V3, k: number): V3 => [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k];
+const smoothstep = (k: number) => k * k * (3 - 2 * k);
 
 const propGeo = {
   can: new THREE.CylinderGeometry(0.033, 0.033, 0.12, 14),
@@ -195,6 +211,30 @@ const propMat = {
   cig: new THREE.MeshStandardMaterial({ color: '#f4f1ea', roughness: 0.8 }),
   tip: new THREE.MeshStandardMaterial({ color: '#ff6a1a', emissive: '#ff4a00', emissiveIntensity: 2 }),
 };
+
+let starTex: THREE.Texture | undefined;
+function starTexture() {
+  if (!starTex) {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const ctx = c.getContext('2d')!;
+    ctx.fillStyle = '#ffd23f';
+    ctx.strokeStyle = '#a07400';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const r = i % 2 ? 12 : 28;
+      ctx.lineTo(32 + Math.cos(a) * r, 32 + Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.stroke();
+    starTex = new THREE.CanvasTexture(c);
+    starTex.colorSpace = THREE.SRGBColorSpace;
+  }
+  return starTex;
+}
 
 let heartTex: THREE.Texture | undefined;
 function heartTexture() {
@@ -239,6 +279,36 @@ export class Avatar {
   private idle = Math.random() * 10;
   private emote?: { e: AnimName; t: number; side?: 'L' | 'R' };
   private cur = new Map<string, Rot>();
+  debugPose?: Pose;
+  private fadingPuddles: THREE.Mesh[] = [];
+  private ikW = { L: 0, R: 0 };
+  private ikLast: Partial<Record<'L' | 'R', IKTarget>> = {};
+  private stars?: THREE.Group;
+
+  private updateDizzy(on: boolean, t: number) {
+    if (on && !this.stars) {
+      this.stars = new THREE.Group();
+      for (let i = 0; i < 3; i++) {
+        const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: starTexture(), transparent: true, depthWrite: false }));
+        s.scale.setScalar(0.14);
+        this.stars.add(s);
+      }
+      this.root.add(this.stars);
+    }
+    if (!this.stars) return;
+    this.stars.visible = on;
+    if (!on) return;
+    const head = this.rig.bone('head');
+    if (head) {
+      head.getWorldPosition(this.v1);
+      this.root.worldToLocal(this.v1);
+      this.stars.position.copy(this.v1).add(this.v2.set(0, 0.28, 0));
+    }
+    this.stars.children.forEach((s, i) => {
+      const a = t * 4 + (i * Math.PI * 2) / 3;
+      s.position.set(Math.cos(a) * 0.18, Math.sin(a * 2) * 0.03, Math.sin(a) * 0.18);
+    });
+  }
   private bodyY = 0;
   private bodyRotX = 0;
   private particles: Particle[] = [];
@@ -359,7 +429,9 @@ export class Avatar {
   }
 
   /** Animação extra (agressão, reação, interação). side: de que lado está o parceiro (mãos dadas). */
+  private argueNext = 0;
   playAnim(e: AnimName, side?: 'L' | 'R') {
+    if (e === 'argue') this.argueNext = 0.3 + Math.random() * 1.2;
     this.emote = { e, t: 0, side };
   }
 
@@ -430,7 +502,7 @@ export class Avatar {
   update(dt: number, moving: number) {
     if (this.bubble && performance.now() > this.bubbleUntil) this.clearBubble();
     // Andar encerra a ação (menos o pulo, que dá para fazer correndo).
-    if (moving && this.emote && !ONE_SHOT.has(this.emote.e)) this.emote = undefined;
+    if (moving && this.emote && !ONE_SHOT.has(this.emote.e) && !WALKABLE.has(this.emote.e)) this.emote = undefined;
 
     const run = moving === 2;
     this.phase += dt * (run ? 10.5 : moving ? 7 : 0);
@@ -486,6 +558,9 @@ export class Avatar {
     let emitPee = false;
     let emitSmoke = 0; // 0 nada, 1 brasa, 2 tragada
     let emitHearts = false;
+    let dizzy = false;
+    // Alvos das mãos (IK) no espaço do personagem (metros; frente = +Z, direita do personagem = -X).
+    const ik: Partial<Record<'L' | 'R', IKTarget>> = {};
     if (this.emote) {
       const e = this.emote.e;
       const et = (this.emote.t += dt);
@@ -520,11 +595,10 @@ export class Avatar {
         P['lowerleg.R'] = [Math.max(0, -k) * 0.8, 0, 0];
         bodyY = Math.abs(k) * 0.08 - 0.03;
       } else if (e === 'clap') {
+        // Palmas: as mãos se encontram na frente do peito
         const k = Math.abs(Math.sin(p * 1.3));
-        P['upperarm.L'] = [-1.25, -0.35 - k * 0.25, -ARM_DOWN + 0.35];
-        P['upperarm.R'] = [-1.25, 0.35 + k * 0.25, ARM_DOWN - 0.35];
-        P['lowerarm.L'] = [-0.55, 0, 0];
-        P['lowerarm.R'] = [-0.55, 0, 0];
+        ik.L = { p: [0.03 + k * 0.1, 1.2, 0.3], pole: [1, -0.6, -0.2] };
+        ik.R = { p: [-0.03 - k * 0.1, 1.2, 0.3], pole: [-1, -0.6, -0.2] };
         P.head = [-0.05, 0, 0];
       } else if (e === 'point') {
         // Braço estendido, só o indicador esticado; a outra mão na cintura.
@@ -568,31 +642,29 @@ export class Avatar {
         P.chest = [breathe * 2, 0, 0];
       } else if (e === 'drink') {
         // Segura a latinha no peito e dá goles de tempos em tempos.
+        // Segura a latinha na altura do peito; no gole leva à boca e inclina a cabeça.
         prop = 'can';
         const c = et % 4;
-        const sip = c > 2.2 && c < 3.6 ? Math.sin(((c - 2.2) / 1.4) * Math.PI) : 0;
-        P['upperarm.R'] = [-0.4 - sip * 0.7, 0.2 + sip * 0.15, ARM_DOWN - 0.15 - sip * 0.15];
-        P['lowerarm.R'] = [-1.6 - sip * 0.9, 0.3, 0];
+        const sip = c > 2.0 && c < 3.6 ? Math.sin(((c - 2.0) / 1.6) * Math.PI) : 0;
+        ik.R = { p: lerp3([-0.2, 1.08, 0.22], [-0.07, 1.42, 0.2], smoothstep(sip)), pole: [-0.5, -1, 0] };
         P.head = [-0.35 * sip, 0, 0];
-        P.chest = [0.02 - 0.08 * sip + breathe, 0, 0];
+        P.chest = [0.02 - 0.06 * sip + breathe, 0, 0];
       } else if (e === 'smoke') {
         // Cigarro na mão; leva à boca, traga e solta a fumaça.
+        // Cigarro entre os dedos, mão na altura da cintura; leva à boca, traga e solta a fumaça.
         prop = 'cig';
         const c = et % 5;
-        const puff = c > 1 && c < 2.3 ? Math.sin(((c - 1) / 1.3) * Math.PI) : 0;
-        P['upperarm.R'] = [-0.2 - puff * 0.9, 0.15 + puff * 0.25, ARM_DOWN - 0.1 - puff * 0.25];
-        P['lowerarm.R'] = [-1.2 - puff * 1.35, 0.25, 0];
-        P.head = [-0.1 * puff, 0, 0];
-        emitSmoke = c > 2.4 && c < 3.6 ? 2 : 1;
+        const puff = c > 1 && c < 2.6 ? Math.sin(((c - 1) / 1.6) * Math.PI) : 0;
+        ik.R = { p: lerp3([-0.25, 1.0, 0.12], [-0.07, 1.46, 0.16], smoothstep(puff)), pole: [-0.5, -1, 0] };
+        P.head = [-0.08 * puff, 0, 0];
+        emitSmoke = c > 2.6 && c < 3.8 ? 2 : 1;
       } else if (e === 'pee') {
         // Quadril à frente, mãos na frente, olhando para baixo (cartum, nada explícito).
         P.wiest = [-0.14, 0, 0];
         P.chest = [-0.06 + breathe, 0, 0];
         P.head = [0.45, Math.sin(t * 0.3) * 0.15, 0];
-        P['upperarm.L'] = [-0.45, -0.25, -ARM_DOWN - 0.05];
-        P['upperarm.R'] = [-0.45, 0.25, ARM_DOWN + 0.05];
-        P['lowerarm.L'] = [-1.1, -0.3, 0];
-        P['lowerarm.R'] = [-1.1, 0.3, 0];
+        ik.L = { p: [0.07, 0.96, 0.16], pole: [1, 0, -0.6] };
+        ik.R = { p: [-0.07, 0.96, 0.16], pole: [-1, 0, -0.6] };
         emitPee = et > 0.7;
       } else if (e === 'hit') {
         // Soco de direita
@@ -630,42 +702,64 @@ export class Avatar {
         P['upperarm.R'] = [-0.4, 0, ARM_DOWN - 1.0 * k];
         P['upperleg.L'] = [0.25 * k, 0, 0];
       } else if (e === 'knockdown') {
-        // Cai de costas, fica no chão e levanta
-        if (et > 4.1) this.emote = undefined;
-        bodyRotX = et < 3.5 ? -Math.PI / 2 : 0;
-        bodyY = et < 3.5 ? 0.12 : 0;
+        // Desmaia: cai de costas, fica no chão (com estrelinhas) e levanta depois de ~5 s
+        if (et > 5.2) this.emote = undefined;
+        bodyRotX = et < 4.6 ? -Math.PI / 2 : 0;
+        bodyY = et < 4.6 ? 0.12 : 0;
+        dizzy = et < 4.6;
         P['upperarm.L'] = [0, 0, 1.3];
         P['upperarm.R'] = [0, 0, -1.3];
         P['upperleg.L'] = [-0.3, 0, -0.15];
         P['lowerleg.L'] = [0.5, 0, 0];
         P.head = [0.25, Math.sin(t * 1.2) * 0.3, 0];
       } else if (e === 'hug') {
-        // Abraço: braços em volta do outro
-        P['upperarm.L'] = [-1.25, -0.65, -ARM_DOWN + 0.55];
-        P['upperarm.R'] = [-1.25, 0.65, ARM_DOWN - 0.55];
-        P['lowerarm.L'] = [-1.2, -0.5, 0];
-        P['lowerarm.R'] = [-1.2, 0.5, 0];
-        P.chest = [0.14 + breathe, Math.sin(t * 1.4) * 0.06, 0];
-        P.head = [0.12, 0.35, 0.1];
+        // Abraço: peito com peito, braços envolvendo as costas do outro (um mais alto, outro mais baixo)
+        const sway = Math.sin(t * 1.4) * 0.02;
+        ik.L = { p: [0.15 + sway, 1.3, 0.42], pole: [1, 0, 0] };
+        ik.R = { p: [-0.16 + sway, 1.15, 0.42], pole: [-1, -0.2, 0] };
+        P.chest = [0.1 + breathe, Math.sin(t * 1.4) * 0.05, 0];
+        P.head = [0.15, 0.45, 0.12]; // cabeça de lado, apoiada no ombro do outro
       } else if (e === 'kiss') {
-        // Beijo: inclina, mãos na cintura do outro, corações subindo
-        P.chest = [0.24 + breathe, 0, 0];
-        P.head = [0.12, 0.12, 0.15];
-        P['upperarm.L'] = [-0.75, -0.35, -ARM_DOWN + 0.3];
-        P['upperarm.R'] = [-0.75, 0.35, ARM_DOWN - 0.3];
-        P['lowerarm.L'] = [-0.9, -0.3, 0];
-        P['lowerarm.R'] = [-0.9, 0.3, 0];
+        // Beijo: rostos encostados, mãos na cintura do outro, corações subindo
+        P.chest = [0.16 + breathe, 0, 0];
+        P.head = [0.1, 0.18, 0.18];
+        ik.L = { p: [0.15, 1.04, 0.26], pole: [1, -0.4, -0.3] };
+        ik.R = { p: [-0.15, 1.04, 0.26], pole: [-1, -0.4, -0.3] };
         emitHearts = true;
-      } else if (e === 'hand') {
-        // Mãos dadas: o braço do lado do outro se abre um pouco e balança
-        const sw = Math.sin(t * 1.6) * 0.15;
-        if (this.emote.side === 'R') {
-          P['upperarm.R'] = [sw, 0, ARM_DOWN - 0.32];
+      } else if (e === 'argue') {
+        // Discussão: alterna apontar o dedo, abrir os braços e gesticular; balança a cabeça e fala.
+        const seg = Math.floor(et / 1.4) % 3;
+        const shake = Math.sin(t * 9) * 0.05;
+        P.chest = [0.12 + breathe, Math.sin(t * 1.7) * 0.12, 0];
+        P.head = [0.04 + shake, Math.sin(t * 3.2) * 0.22, 0];
+        if (seg === 0) {
+          P['upperarm.R'] = [-1.35 + Math.sin(t * 10) * 0.08, 0.1, ARM_DOWN - 0.5];
           P['lowerarm.R'] = [-0.15, 0, 0];
+          for (const f of ['upfinger2.R', 'upfinger3.R', 'upfinger4.R']) P[f] = [0, 0, FINGER_CURL];
+          P['tooseup.R'] = [0, 0, FINGER_CURL * 0.5];
+          P['upperarm.L'] = [0.15, 0.3, -ARM_DOWN - 0.25];
+          P['lowerarm.L'] = [-1.6, 0, 0];
+        } else if (seg === 1) {
+          const k = Math.abs(Math.sin(t * 4));
+          P['upperarm.L'] = [-0.75, 0, -ARM_DOWN + 0.55 + k * 0.15];
+          P['upperarm.R'] = [-0.75, 0, ARM_DOWN - 0.55 - k * 0.15];
+          P['lowerarm.L'] = [-0.7, -0.3, 0];
+          P['lowerarm.R'] = [-0.7, 0.3, 0];
         } else {
-          P['upperarm.L'] = [sw, 0, -ARM_DOWN + 0.32];
-          P['lowerarm.L'] = [-0.15, 0, 0];
+          P['upperarm.R'] = [-0.9 - Math.sin(t * 7) * 0.35, 0.3, ARM_DOWN - 0.35];
+          P['lowerarm.R'] = [-1.1 + Math.sin(t * 7) * 0.4, 0, 0];
+          P['upperarm.L'] = [0.15, 0.3, -ARM_DOWN - 0.25];
+          P['lowerarm.L'] = [-1.6, 0, 0];
         }
+        if (et >= this.argueNext) {
+          this.say(ARGUE_LINES[Math.floor(Math.random() * ARGUE_LINES.length)]);
+          this.argueNext = et + 2.2 + Math.random() * 1.8;
+        }
+      } else if (e === 'hand') {
+        // Mãos dadas: as mãos se encontram entre os dois e balançam juntas
+        const sw = Math.sin(t * 1.6) * 0.04;
+        if (this.emote.side === 'R') ik.R = { p: [-0.25, 0.86, 0.05 + sw], pole: [-0.3, 0, -1] };
+        else ik.L = { p: [0.25, 0.86, 0.05 + sw], pole: [0.3, 0, -1] };
         P.head = [0, this.emote.side === 'R' ? -0.3 : 0.3, 0];
       }
     }
@@ -691,6 +785,9 @@ export class Avatar {
         P['lowerarm.L'] = [-1.6, 0, 0];
       }
     }
+
+    // Depuração (?debug): sobrepõe ângulos para calibrar poses.
+    if (this.debugPose) Object.assign(P, this.debugPose);
 
     // Aplica a pose com transição suave (nada de "teleporte" entre poses).
     const rig = this.rig;
@@ -718,6 +815,23 @@ export class Avatar {
       this.nameTag.position.y = lying ? 0.8 : (this.holder && !this.emote ? 2.95 : 2.05) + this.bodyY;
     }
 
+    // Cinemática inversa: leva as mãos aos alvos (boca, costas do parceiro, mão do outro...).
+    this.root.updateMatrixWorld(true);
+    for (const side of ['L', 'R'] as const) {
+      const target = ik[side];
+      if (target) this.ikLast[side] = target;
+      this.ikW[side] += ((target ? 1 : 0) - this.ikW[side]) * Math.min(1, dt * 10);
+      const use = target ?? this.ikLast[side];
+      if (!use || this.ikW[side] < 0.01) continue;
+      const pos = this.v1.set(...use.p);
+      this.root.localToWorld(pos);
+      const pole = this.v2.set(...use.pole).applyQuaternion(this.root.getWorldQuaternion(this.qa)).normalize();
+      rig.reach(side, pos, pole, this.ikW[side]);
+    }
+
+    // Desmaio: estrelinhas girando sobre a cabeça
+    this.updateDizzy(dizzy, t);
+
     // Objetos de mão
     const handBusy = !!this.emote && !FREE_HAND.has(this.emote.e);
     if (this.holder) this.holder.visible = !handBusy;
@@ -736,7 +850,7 @@ export class Avatar {
     if (this.holder?.visible && this.emote?.e !== 'hitItem') keepUpright(this.holder);
     if (prop) keepUpright(this.props);
 
-    this.updateParticles(dt, emitPee, emitSmoke, emitHearts);
+    this.updateParticles(dt, emitPee, emitSmoke, emitHearts, moving > 0);
   }
 
   // ---------- Partículas (fumaça e xixi) ----------
@@ -757,7 +871,7 @@ export class Avatar {
     this.particles.push({ mesh: m, vel, life, max: life, kind });
   }
 
-  private updateParticles(dt: number, pee: boolean, smoke: number, hearts = false) {
+  private updateParticles(dt: number, pee: boolean, smoke: number, hearts = false, walking = false) {
     this.heartAcc += dt;
     if (hearts && this.heartAcc > 0.45) {
       this.heartAcc = 0;
@@ -795,24 +909,31 @@ export class Avatar {
     }
 
     // A poça cresce enquanto faz xixi e some devagar depois.
-    if (pee && !this.puddle && this.root.parent) {
+    // Andando, só caem as gotas; a poça se forma quando para.
+    const puddling = pee && !walking;
+    if (puddling && !this.puddle && this.root.parent) {
       this.puddle = new THREE.Mesh(propGeo.puddle, new THREE.MeshStandardMaterial({ color: '#d8b92a', transparent: true, opacity: 0.55, roughness: 0.1, depthWrite: false }));
       this.puddle.scale.setScalar(0.01);
       this.root.parent.add(this.puddle);
     }
     if (this.puddle) {
-      const m = this.puddle.material as THREE.MeshStandardMaterial;
-      if (pee) {
+      if (puddling) {
         this.puddle.position.copy(this.root.position).addScaledVector(fwd, 0.75).setY(0.02);
         this.puddle.scale.setScalar(Math.min(0.5, this.puddle.scale.x + dt * 0.15));
-        m.opacity = 0.55;
       } else {
-        m.opacity -= dt * 0.05;
-        if (m.opacity <= 0) {
-          this.puddle.removeFromParent();
-          m.dispose();
-          this.puddle = undefined;
-        }
+        // Saiu andando ou parou: a poça fica no lugar e seca devagar.
+        this.fadingPuddles.push(this.puddle);
+        this.puddle = undefined;
+      }
+    }
+    for (let i = this.fadingPuddles.length - 1; i >= 0; i--) {
+      const pd = this.fadingPuddles[i];
+      const m = pd.material as THREE.MeshStandardMaterial;
+      m.opacity -= dt * 0.05;
+      if (m.opacity <= 0) {
+        pd.removeFromParent();
+        m.dispose();
+        this.fadingPuddles.splice(i, 1);
       }
     }
 

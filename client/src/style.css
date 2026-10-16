@@ -382,4 +382,35 @@ input:focus { border-color: var(--accent); }
 @media (pointer: coarse) { .street-actions { bottom: 200px; } }
 
 /* Mira da primeira pessoa (avenida) */
-.fp-cross { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); pointer-events: none; }
+.fp-cross { position: absolute; left: 50%; top: 50%; width: 8px; height: 8px; margin: -4px; border-radius: 50%; background: #fff; box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45); pointer-events: none; }
+
+/* Painel de controles (substitui o texto de ajuda) */
+.help { display: none; }
+.help-panel {
+  position: absolute; top: 12px; right: 12px; width: 268px;
+  border-radius: 14px; overflow: hidden;
+  background: rgba(18, 21, 26, 0.82); backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.08); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+  font-size: 13px;
+}
+.help-toggle {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 9px 12px; border: 0; background: none; color: var(--text); cursor: pointer;
+  font: inherit; font-weight: 800; letter-spacing: 0.01em;
+}
+.help-toggle:hover { background: rgba(255, 255, 255, 0.04); }
+.help-panel.closed { width: auto; }
+.help-panel.closed .help-body { display: none; }
+.help-body { display: grid; gap: 10px; padding: 2px 12px 12px; max-height: calc(100vh - 220px); overflow-y: auto; }
+.help-body h4 { margin: 0 0 4px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--accent); }
+.help-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 3px 0; color: #d8dee6; }
+.help-row + .help-row { border-top: 1px solid rgba(255, 255, 255, 0.05); }
+.help-row .keys { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); flex: none; }
+.help-panel kbd {
+  display: inline-block; min-width: 22px; padding: 2px 6px; border-radius: 6px; text-align: center;
+  font: 700 11px/1.5 system-ui, sans-serif; color: var(--text);
+  background: linear-gradient(#3a414b, #2a3037); border: 1px solid #4a525d; border-bottom-width: 2px;
+}
+.help-panel kbd.mouse { background: linear-gradient(#34424f, #27313b); }
+.help-toggle kbd { min-width: 0; padding: 0 5px; font-size: 10px; }
+@media (pointer: coarse) { .help-panel { display: none; } }

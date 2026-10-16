@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
-import { GAME, JAIL, POLICE_VANS, TEAMS, TRUCKS, WORLD, type Rect } from '../../shared/config';
-import { mat } from './avatar';
+import { AGGRESSION, GAME, JAIL, POLICE_VANS, TEAMS, TRUCKS, WORLD, type Rect } from '../../shared/config';
+import { Avatar, mat } from './avatar';
 import { AmbientCrowd } from './crowd';
 import {
   FACADE_CELL, asphaltTexture, facadeTexture, ledPanelTexture, paverTexture, rng, storefrontTexture, windowLightsTexture,
@@ -19,6 +19,8 @@ export interface World {
   setDetail(high: boolean): void;
   /** 0 = dia, 1 = noite: acende janelas, vitrines e postes. */
   setNight(n: number): void;
+  /** Golpe/empurrão em alguém da multidão de fundo à frente; false se não tinha ninguém. */
+  hitAmbient(x: number, z: number, yaw: number, kind: 'hit' | 'push'): boolean;
 }
 
 export function buildWorld(scene: THREE.Scene, lite = false): World {
@@ -105,8 +107,82 @@ export function buildWorld(scene: THREE.Scene, lite = false): World {
   const crowd = new AmbientCrowd(scene, rand, lite ? 70 : 200); // celular: multidão de fundo menor
   const confetti = new Confetti(scene, rand);
 
+  // Pessoas da multidão que apanharam: viram um Avatar completo enquanto reagem e depois voltam.
+  interface Promoted { idx: number; av: Avatar; hits: number[]; vx: number; vz: number; slideT: number; until: number }
+  const promoted = new Map<number, Promoted>();
+  const demote = (pr: Promoted) => {
+    scene.remove(pr.av.root);
+    pr.av.dispose();
+    crowd.setHidden(pr.idx, false);
+    promoted.delete(pr.idx);
+  };
+
   return {
+    hitAmbient(x, z, yaw, kind) {
+      const idx = crowd.findInFront(x, z, yaw, AGGRESSION.range);
+      // Quem já virou personagem continua apanhável (a multidão o esconde da busca).
+      let pr: Promoted | undefined;
+      if (idx < 0) {
+        let bestD: number = AGGRESSION.range;
+        for (const p of promoted.values()) {
+          const per = crowd.person(p.idx);
+          const d = Math.hypot(per.x - x, per.z - z);
+          let ang = Math.atan2(per.x - x, per.z - z) - yaw;
+          ang = Math.atan2(Math.sin(ang), Math.cos(ang));
+          if (d < bestD && Math.abs(ang) < 0.9) {
+            bestD = d;
+            pr = p;
+          }
+        }
+        if (!pr) return false;
+      } else {
+        const per = crowd.person(idx);
+        const av = new Avatar(per.team, per.look);
+        av.root.scale.setScalar(per.h);
+        av.root.position.set(per.x, 0, per.z);
+        av.root.rotation.y = per.yaw;
+        scene.add(av.root);
+        crowd.setHidden(idx, true);
+        pr = { idx, av, hits: [], vx: 0, vz: 0, slideT: 0, until: 0 };
+        promoted.set(idx, pr);
+      }
+      const per = crowd.person(pr.idx);
+      const now = performance.now();
+      if (pr.av.currentEmote === 'knockdown') return true; // já está no chão
+      pr.hits = pr.hits.filter((t) => now - t < 10000);
+      pr.hits.push(now);
+      // Vira para quem bateu e é jogada para trás.
+      per.yaw = Math.atan2(x - per.x, z - per.z);
+      pr.av.root.rotation.y = per.yaw;
+      const dist = kind === 'push' ? AGGRESSION.push : 0.5;
+      const len = Math.hypot(per.x - x, per.z - z) || 1;
+      pr.slideT = 0.3;
+      pr.vx = ((per.x - x) / len) * (dist / pr.slideT);
+      pr.vz = ((per.z - z) / len) * (dist / pr.slideT);
+      if (kind === 'hit' && pr.hits.length >= AGGRESSION.knockHits) {
+        pr.hits = [];
+        pr.av.playAnim('knockdown');
+        pr.until = now + 5600;
+      } else {
+        pr.av.playAnim('stagger');
+        pr.until = now + 6000;
+      }
+      return true;
+    },
     update(time, dt) {
+      const now = performance.now();
+      for (const pr of [...promoted.values()]) {
+        const per = crowd.person(pr.idx);
+        if (pr.slideT > 0) {
+          const s = Math.min(dt, pr.slideT);
+          pr.slideT -= s;
+          per.x = Math.max(-L, Math.min(L, per.x + pr.vx * s));
+          per.z = Math.max(-WORLD.halfWidth + 0.5, Math.min(WORLD.halfWidth - 0.5, per.z + pr.vz * s));
+          pr.av.root.position.set(per.x, 0, per.z);
+        }
+        pr.av.update(dt, 0);
+        if (now > pr.until && !pr.av.currentEmote) demote(pr);
+      }
       crowd.update(time);
       confetti.update(dt);
       for (const t of trucks) t.update(time);

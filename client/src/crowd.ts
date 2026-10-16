@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { CLOTH_COLORS, HAIR_COLORS, SKIN_TONES, SPAWN, TEAMS, TRUCKS, WORLD } from '../../shared/config';
+import { CLOTH_COLORS, HAIR_COLORS, SKIN_TONES, SPAWN, TEAMS, TRUCKS, WORLD, type TeamId } from '../../shared/config';
+import type { Look } from '../../shared/look';
 import { flagMaterial } from './avatar';
 import { bakePose, crowdMaterial } from './character';
 import { flagGeometry } from './wave';
@@ -13,10 +14,14 @@ interface Person {
   h: number;
   variant: number;
   slot: number; // índice dentro da malha da variante
+  team: TeamId;
+  look: Look; // visual equivalente, para virar um personagem completo quando apanha
+  hidden?: boolean;
 }
 
 // Multidão de fundo: centenas de pessoas com o mesmo modelo dos jogadores, mas em pose fixa
 // e desenhadas com InstancedMesh (poucos draw calls). Os bots animados ficam por conta do servidor.
+// Quando alguém da multidão apanha, ela some daqui e vira um Avatar completo (ver world.ts).
 export class AmbientCrowd {
   private meshes: THREE.InstancedMesh[] = [];
   private poles: THREE.InstancedMesh;
@@ -30,7 +35,6 @@ export class AmbientCrowd {
   private up = new THREE.Vector3(0, 1, 0);
 
   constructor(scene: THREE.Scene, rand: () => number, perTeam = 200) {
-
     // Duas poses: braços ao lado do corpo e um braço erguido (punho para cima).
     const poses = [
       bakePose((r) => {
@@ -55,6 +59,7 @@ export class AmbientCrowd {
     for (const team of [0, 1] as const) {
       const truck = TRUCKS.find((t) => t.team === team)!;
       const zone = SPAWN[team];
+      const teamColors = [TEAMS[team].color, TEAMS[team].accent].filter((c) => c !== '#ffffff').map((c) => CLOTH_COLORS.indexOf(c));
       for (let i = 0; i < perTeam; i++) {
         // ~55% em volta do carro de som; o resto espalhado nas calçadas da zona do lado.
         let x: number, z: number;
@@ -71,17 +76,35 @@ export class AmbientCrowd {
         const variant = rand() < 0.22 ? 1 : 0;
         const idx = this.people.length;
         const hasFlag = variant === 0 && rand() < 0.14;
-        this.people.push({ x, z, yaw, phase: rand() * Math.PI * 2, amp: 0.02 + rand() * 0.1, h: 0.94 + rand() * 0.12, variant, slot: variantCount[variant]++ });
+
+        // Cores como índices das paletas, para o visual equivaler a um Look de verdade.
+        const skin = Math.floor(rand() * SKIN_TONES.length);
+        const hair = Math.floor(rand() * HAIR_COLORS.length);
+        const shirt = rand() < 0.65 ? pick(teamColors) : Math.floor(rand() * CLOTH_COLORS.length);
+        const pants = pick([10, 1, 2, 13]);
+        const shoes = pick([1, 0, 13, 3]);
+        const headS = pick([0, 0, 0, 1, 3]);
+        const look: Look = {
+          skin,
+          hair,
+          head: { s: headS, c: shirt, a: 0, p: 0 },
+          torso: { s: 0, c: shirt, a: 0, p: 0 },
+          legs: { s: 0, c: pants, a: 0, p: 0 },
+          feet: { s: 0, c: shoes, a: 0, p: 0 },
+          print: 0,
+          item: hasFlag ? 'flag' : 'none',
+          sign: '',
+        };
+        this.people.push({ x, z, yaw, phase: rand() * Math.PI * 2, amp: 0.02 + rand() * 0.1, h: 0.94 + rand() * 0.12, variant, slot: variantCount[variant]++, team, look });
         if (hasFlag) this.flagOwners[team].push(idx);
 
         const a = attrs[variant];
-        a.skin.push(...color.set(pick(SKIN_TONES)).toArray());
-        a.hair.push(...color.set(pick(HAIR_COLORS)).toArray());
-        const teamShirt = TEAMS[team].accent === '#ffffff' ? TEAMS[team].color : pick([TEAMS[team].color, TEAMS[team].accent]);
-        a.c1.push(...color.set(rand() < 0.65 ? teamShirt : pick(CLOTH_COLORS)).toArray());
-        a.c2.push(...color.set(pick(['#2d3440', '#3b4a63', '#1f2226', '#5b5f66', '#6b5a45', '#1d3a8a'])).toArray());
-        a.c3.push(...color.set(pick(['#1d2129', '#ffffff', '#8d6e63', '#e63946'])).toArray());
-        a.head.push(pick([0, 0, 0, 1, 3]));
+        a.skin.push(...color.set(SKIN_TONES[skin]).toArray());
+        a.hair.push(...color.set(HAIR_COLORS[hair]).toArray());
+        a.c1.push(...color.set(CLOTH_COLORS[shirt]).toArray());
+        a.c2.push(...color.set(CLOTH_COLORS[pants]).toArray());
+        a.c3.push(...color.set(CLOTH_COLORS[shoes]).toArray());
+        a.head.push(headS);
       }
     }
 
@@ -127,7 +150,8 @@ export class AmbientCrowd {
     for (const p of this.people) {
       const bob = Math.max(0, Math.sin(time * 4 + p.phase)) * p.amp;
       q.setFromAxisAngle(this.up, p.yaw + Math.sin(time * 1.3 + p.phase) * 0.15);
-      s.set(p.h, p.h, p.h);
+      if (p.hidden) s.set(0, 0, 0); // virou personagem completo (apanhou): some da multidão
+      else s.set(p.h, p.h, p.h);
       this.meshes[p.variant].setMatrixAt(p.slot, m.compose(v.set(p.x, bob, p.z), q, s));
     }
     let poleIdx = 0;
@@ -139,8 +163,9 @@ export class AmbientCrowd {
         // Mastro ao lado do corpo, na altura da mão direita.
         const ox = -Math.cos(p.yaw) * 0.42;
         const oz = Math.sin(p.yaw) * 0.42;
+        const sc = p.hidden ? 0 : 1;
         v.set(p.x + ox, 0.55 * p.h + bob, p.z + oz);
-        this.poles.setMatrixAt(poleIdx++, m.compose(v, q.identity(), s.set(1, 1, 1)));
+        this.poles.setMatrixAt(poleIdx++, m.compose(v, q.identity(), s.set(sc, sc, sc)));
         v.y += 2.0;
         q.setFromAxisAngle(this.up, p.yaw + Math.PI / 2 + Math.sin(time * 0.7 + p.phase) * 0.4);
         this.flags[team].setMatrixAt(k, m.compose(v, q, s));
@@ -149,5 +174,34 @@ export class AmbientCrowd {
     }
     for (const mesh of this.meshes) mesh.instanceMatrix.needsUpdate = true;
     this.poles.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Pessoa da multidão à frente de (x, z) olhando para yaw, até range metros; -1 se ninguém. */
+  findInFront(x: number, z: number, yaw: number, range: number) {
+    let best = -1;
+    let bestD = range;
+    this.people.forEach((p, i) => {
+      if (p.hidden) return;
+      const dx = p.x - x;
+      const dz = p.z - z;
+      const d = Math.hypot(dx, dz);
+      if (d >= bestD) return;
+      let ang = Math.atan2(dx, dz) - yaw;
+      while (ang > Math.PI) ang -= Math.PI * 2;
+      while (ang < -Math.PI) ang += Math.PI * 2;
+      if (Math.abs(ang) < 0.9) {
+        best = i;
+        bestD = d;
+      }
+    });
+    return best;
+  }
+
+  person(i: number) {
+    return this.people[i];
+  }
+
+  setHidden(i: number, hidden: boolean) {
+    this.people[i].hidden = hidden;
   }
 }

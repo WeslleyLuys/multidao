@@ -33,7 +33,7 @@ export type ClientMsg =
   | { t: 'switch'; w: number }
   | { t: 'quitMatch' }
   // ----- Avenida: agressão, interações e lista de online -----
-  | { t: 'attack'; kind: AttackKind }
+  | { t: 'attack'; kind: AttackKind; ambient?: boolean } // ambient: acertou alguém da multidão de fundo
   | { t: 'social'; kind: Social; target: number }
   | { t: 'socialReply'; from: number; accept: boolean }
   | { t: 'who' };
@@ -84,6 +84,7 @@ export type ServerMsg =
   // ----- Avenida: agressão, interações e lista de online -----
   | { t: 'attack'; id: number; target: number; kind: AttackKind; knocked: boolean }
   | { t: 'moved'; x: number; z: number; yaw?: number } // o servidor reposicionou você
+  | { t: 'slide'; vx: number; vz: number; ms: number } // deslize (empurrão/golpe/avanço do soco)
   | { t: 'jail'; until: number; now: number; where: 'cell' | 'outside'; reason: string }
   | { t: 'free' }
   | { t: 'socialAsk'; from: number; kind: Social }

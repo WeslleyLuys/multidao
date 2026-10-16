@@ -529,6 +529,54 @@ export class CharacterRig {
     b.quaternion.copy(this.q);
   }
 
+  // ---------- Cinemática inversa (IK) de dois ossos para os braços ----------
+  private v = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
+  private qw = new THREE.Quaternion();
+  private qp = new THREE.Quaternion();
+
+  /** Gira o osso (no mundo) para que a direção `from` passe a apontar para `to`. */
+  private aimBone(bone: THREE.Bone, from: THREE.Vector3, to: THREE.Vector3) {
+    this.q.setFromUnitVectors(from.normalize(), to.normalize());
+    bone.getWorldQuaternion(this.qw);
+    this.qw.premultiply(this.q);
+    bone.parent!.getWorldQuaternion(this.qp).invert();
+    bone.quaternion.copy(this.qp.multiply(this.qw));
+    bone.updateMatrixWorld(true);
+  }
+
+  /**
+   * Leva a mão (side 'L' | 'R') até `target` (mundo), dobrando o cotovelo na direção `pole` (mundo).
+   * `weight` 0..1 mistura com a pose atual (para transições suaves).
+   */
+  reach(side: 'L' | 'R', target: THREE.Vector3, pole: THREE.Vector3, weight = 1) {
+    const up = this.bone(`upperarm.${side}`);
+    const lo = this.bone(`lowerarm.${side}`);
+    const hand = this.bone(`hand.${side}`);
+    if (!up || !lo || !hand || weight <= 0.001) return;
+    this.container.updateMatrixWorld(true);
+    const [S, E, W, T, B] = this.v;
+    up.getWorldPosition(S);
+    lo.getWorldPosition(E);
+    hand.getWorldPosition(W);
+    T.copy(W).lerp(target, Math.min(1, weight));
+    const a = S.distanceTo(E);
+    const b = E.distanceTo(W);
+    const toT = T.clone().sub(S);
+    const d = Math.min(a + b - 1e-4, Math.max(Math.abs(a - b) + 1e-4, toT.length()));
+    const dir = toT.normalize();
+    // Lei dos cossenos: ângulo no ombro entre a reta ombro→alvo e o braço.
+    const cosA = Math.min(1, Math.max(-1, (a * a + d * d - b * b) / (2 * a * d)));
+    const sinA = Math.sqrt(1 - cosA * cosA);
+    B.copy(pole).addScaledVector(dir, -pole.dot(dir));
+    if (B.lengthSq() < 1e-6) B.set(0, -1, 0);
+    B.normalize();
+    const elbow = S.clone().addScaledVector(dir, a * cosA).addScaledVector(B, a * sinA);
+    this.aimBone(up, E.clone().sub(S), elbow.clone().sub(S));
+    lo.getWorldPosition(E);
+    hand.getWorldPosition(W);
+    this.aimBone(lo, W.clone().sub(E), S.clone().addScaledVector(dir, d).sub(E));
+  }
+
   dispose() {
     (this.mesh.material as THREE.Material).dispose();
   }

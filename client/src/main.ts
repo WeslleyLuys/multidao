@@ -11,7 +11,7 @@ import {
 } from '../../shared/config';
 import { SNAP_STRIDE, type AttackKind, type PlayerInfo, type RosterEntry, type ServerMsg } from '../../shared/protocol';
 import { DEFAULT_LOOK, randomLook, sanitizeLook, teamClothColors, type Look } from '../../shared/look';
-import { step } from '../../shared/physics';
+import { resolve, step } from '../../shared/physics';
 import { Avatar } from './avatar';
 import { loadCharacter } from './character';
 import { MatchClient } from './match/matchClient';
@@ -311,6 +311,7 @@ function replaceAvatar(old: Avatar, next: Avatar) {
 }
 
 function buildSelfAvatar() {
+  buildFpHands(); // mãos da 1ª pessoa acompanham pele e manga atuais
   const next = new Avatar(profile.team, profile.look, profile.name || 'Você', true);
   if (selfAvatar) selfAvatar = replaceAvatar(selfAvatar, next);
   else {
@@ -525,6 +526,9 @@ net.on((msg: ServerMsg) => {
       }
       break;
     }
+    case 'slide':
+      slide = { vx: msg.vx, vz: msg.vz, until: performance.now() + msg.ms };
+      break;
     case 'moved':
       // O servidor reposicionou você (empurrão, prisão, interação).
       self.x = serverSelf.x = msg.x;
@@ -562,7 +566,7 @@ net.on((msg: ServerMsg) => {
     case 'socialEnd':
       for (const id of [msg.a, msg.b]) {
         const av = avatarOf(id);
-        if (av && (['hug', 'kiss', 'hand'] as const).includes(av.currentEmote as Social)) av.playEmote('stop');
+        if (av && (SOCIALS as readonly string[]).includes(av.currentEmote ?? '')) av.playEmote('stop');
       }
       break;
     case 'notice':
@@ -679,11 +683,72 @@ function avatarOf(id: number) {
   return id === selfId ? selfAvatar : remotes.get(id)?.avatar;
 }
 
+let slide: { vx: number; vz: number; until: number } | undefined;
+
+// ---------- Mãos em primeira pessoa (avenida) ----------
+// Desenhadas numa cena à parte por cima do mundo (como a arma no FPS); socam e empurram.
+const fpScene = new THREE.Scene();
+const fpCam = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.01, 10);
+fpScene.add(new THREE.HemisphereLight('#e8f0ff', '#4a4236', 1.6));
+const fpKey = new THREE.DirectionalLight('#fff1dc', 2);
+fpKey.position.set(1, 2, 1);
+fpScene.add(fpKey);
+const fpHands = new THREE.Group();
+fpScene.add(fpHands);
+const fpHand = { L: new THREE.Group(), R: new THREE.Group() };
+let fpAnim: { kind: AttackKind; t: number } | undefined;
+function buildFpHands() {
+  fpHands.clear();
+  const m = new THREE.MeshStandardMaterial({ color: SKIN_TONES[profile.look.skin] ?? SKIN_TONES[0], roughness: 0.6 });
+  const sleeve = new THREE.MeshStandardMaterial({ color: CLOTH_COLORS[profile.look.torso.c] ?? '#ffffff', roughness: 0.85 });
+  for (const side of ['L', 'R'] as const) {
+    const g = fpHand[side];
+    g.clear();
+    const fist = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.075, 0.09), m);
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.065, 0.065, 0.24), profile.look.torso.s >= 2 ? sleeve : m);
+    arm.position.z = 0.16;
+    g.add(fist, arm);
+    fpHands.add(g);
+  }
+}
+buildFpHands();
+addEventListener('resize', () => {
+  fpCam.aspect = innerWidth / innerHeight;
+  fpCam.updateProjectionMatrix();
+});
+function updateFpHands(dt: number) {
+  const on = input.firstPerson && screen === 'playing' && !!selfAvatar && !match;
+  if (!on) {
+    if (gfx.overlay?.scene === fpScene) gfx.overlay = undefined;
+    return;
+  }
+  gfx.overlay = { scene: fpScene, camera: fpCam };
+  let jabR = 0;
+  let push = 0;
+  if (fpAnim) {
+    fpAnim.t += dt;
+    const k = Math.sin(Math.min(1, fpAnim.t / 0.35) * Math.PI);
+    if (fpAnim.kind === 'push') push = k;
+    else jabR = k;
+    if (fpAnim.t > 0.36) fpAnim = undefined;
+  }
+  const bob = self.moving ? Math.sin(performance.now() / (self.moving === 2 ? 70 : 110)) * 0.012 : 0;
+  // Guarda baixa; o soco estica a direita, o empurrão leva as duas para a frente.
+  // (na câmera, +X é a direita da tela)
+  fpHand.L.position.set(-0.17 + push * 0.07, -0.21 + bob + push * 0.06, -0.5 - push * 0.22);
+  fpHand.R.position.set(0.17 - push * 0.07 - jabR * 0.1, -0.21 + bob + push * 0.06 + jabR * 0.06, -0.5 - push * 0.22 - jabR * 0.3);
+  fpHand.L.rotation.set(0.25 - push * 0.2, 0, 0);
+  fpHand.R.rotation.set(0.25 - push * 0.2 - jabR * 0.2, 0, 0);
+}
+
 function doAttack(kind: AttackKind) {
   const now = performance.now();
   if (now - lastAttack < AGGRESSION.intervalMs || jailInfo || now < knockUntil) return;
   lastAttack = now;
-  net.send({ t: 'attack', kind });
+  // Sem jogador/bot à frente: tenta a multidão de fundo (reação local; o servidor só avalia a polícia).
+  const ambient = !personInFront(AGGRESSION.range) && world.hitAmbient(self.x, self.z, self.yaw, kind);
+  net.send(ambient ? { t: 'attack', kind, ambient } : { t: 'attack', kind });
+  fpAnim = { kind, t: 0 };
 }
 
 /** Jogador (ou bot) mais próximo de frente para mim, até `range` metros. */
@@ -865,6 +930,7 @@ addEventListener('keydown', (e) => {
   }
   if (e.code === 'KeyC') return doEmote('crouch');
   if (e.code === 'KeyV') return setView(!input.firstPerson);
+  if (e.code === 'KeyH') return setHelp($('#help').classList.contains('closed'));
   if (e.code === 'KeyF') return doAttack('hit');
   if (e.code === 'KeyG') return doAttack('push');
   if (e.code === 'KeyT') return openSocialMenu();
@@ -969,7 +1035,14 @@ function updateSelf(dt: number, now: number) {
   // Caído no chão: não anda.
   if (now < knockUntil) dx = dz = 0;
 
-  const moved = step(self, dx, dz, input.run, dt, jailInfo ? JAIL[jailInfo.where] : undefined);
+  const jailRect = jailInfo ? JAIL[jailInfo.where] : undefined;
+  const moved = step(self, dx, dz, input.run, dt, jailRect);
+  // Deslize de empurrão/golpe (o servidor faz o mesmo; aqui fica suave na hora).
+  if (slide && now < slide.until) {
+    self.x += slide.vx * dt;
+    self.z += slide.vz * dt;
+    resolve(self, jailRect);
+  }
   self.moving = moved ? (input.run ? 2 : 1) : 0;
   // Em primeira pessoa o corpo olha para onde a câmera mira (golpes e interações vão nessa direção).
   if (input.firstPerson) self.yaw = input.camYaw + Math.PI;
@@ -1022,6 +1095,22 @@ function updateSelf(dt: number, now: number) {
   camera.rotation.order = 'XYZ';
   camera.lookAt(camTarget);
 }
+
+// ---------- Painel de controles (H) ----------
+const HELP_KEY = 'multidao-help';
+function setHelp(open: boolean) {
+  $('#help').classList.toggle('closed', !open);
+  $('#help-toggle').setAttribute('aria-expanded', String(open));
+  try {
+    localStorage.setItem(HELP_KEY, open ? 'open' : 'closed');
+  } catch {}
+}
+try {
+  setHelp(localStorage.getItem(HELP_KEY) !== 'closed');
+} catch {
+  setHelp(true);
+}
+$('#help-toggle').addEventListener('click', () => setHelp($('#help').classList.contains('closed')));
 
 // ---------- Primeira / terceira pessoa ----------
 const VIEW_KEY = 'multidao-view';
@@ -1088,6 +1177,12 @@ function updateClock(now: number) {
   if (el.textContent !== label) el.textContent = label;
 }
 
+// Modo de depuração (?debug): expõe a cena para scripts de teste posarem avatares e fotografarem.
+const debug = location.search.includes('debug')
+  ? { freeze: false, avatars: [] as Avatar[], THREE, scene, camera, Avatar, profile: () => profile }
+  : undefined;
+if (debug) (window as any).__debug = debug;
+
 let lastT = performance.now();
 function renderFrame(now: number) {
   const dt = Math.min(0.1, (now - lastT) / 1000);
@@ -1095,6 +1190,7 @@ function renderFrame(now: number) {
   const t = now / 1000;
   waveTime.value = t;
 
+  updateFpHands(dt);
   if (match) {
     match.update(dt, now);
     gfx.render(now);
@@ -1102,7 +1198,10 @@ function renderFrame(now: number) {
   }
   if (now - lastClock > 500) updateClock(now);
 
-  if (inGame() && selfAvatar) {
+  if (debug?.freeze) {
+    // ?debug: câmera e avatares controlados pelo script de teste
+    for (const a of debug.avatars) a.update(dt, 0);
+  } else if (inGame() && selfAvatar) {
     updateSelf(dt, now);
   } else {
     // Câmera passeando pela avenida atrás do lobby.
